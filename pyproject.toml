@@ -12,6 +12,7 @@ maintainers = [
 ]
 dependencies = [
     'cochleogram[lif,czi]',
+    'cftsdata[zarr]',
 ]
 dynamic = ["version"]
 
