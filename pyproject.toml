@@ -1,0 +1,26 @@
+[project]
+name = "mmm-db"
+description = "Supports colony db data files"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {file = "license.txt"}
+authors = [
+    {name = "Brad Buran", email="buran@ohsu.edu"},
+]
+maintainers = [
+    {name = "Brad Buran", email="buran@ohsu.edu"},
+]
+dependencies = [
+    'cochleogram[lif,czi]',
+]
+dynamic = ["version"]
+
+[build-system]
+requires = ["setuptools>=61.2", "wheel", "setuptools_scm[toml]>=3.4.3"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+write_to = "src/mmm_db/version.py"
+
+[tool.setuptools.packages.find]
+where = ["src"]
