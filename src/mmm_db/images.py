@@ -1,6 +1,13 @@
+import io
 import re
 from pathlib import Path
-from cochleogram.util import load_czi
+
+import numpy as np
+from PIL import Image
+
+from colony_manager.datatypes import (
+    DataTypeDescription, plot_callback, image_callback,
+)
 
 
 P_SYNAPTOGRAM_FILENAME = re.compile(
@@ -18,39 +25,6 @@ EAR_MAP = {'L': 'Left', 'R': 'Right'}
 def pfreq_to_freq(x):
     a, b = x.split('p')
     return int(a) + int(b) / 10
-
-
-def parse_synaptogram_filename(relative_path, location):
-    if 'imaris' in relative_path:
-        return None
-    if 'napari' in relative_path:
-        return None
-    filename = Path(location.base_path) / relative_path
-
-    def to_replicate(x):
-        if x is None:
-            return 'a'
-        x = x.lower()
-        replicate_map = {'a': 'a', 'b': 'b', 'l': 'b', 'b2': 'b', 'a2': 'a', 'l2': 'b', 'h': 'b'}
-        return replicate_map.get(x, 'b')
-
-    try:
-        info = P_SYNAPTOGRAM_FILENAME.match(filename.stem).groupdict()
-    except AttributeError as e:
-        return None
-
-    info['ear'] = EAR_MAP[info['ear']]
-    info['frequency'] = pfreq_to_freq(info['frequency'])
-    info['IHCs'] = int(info['IHCs']) if info['IHCs'] else None
-    info['r'] = to_replicate(info.pop('replicate'))
-    if '63x' in relative_path and 'IHC' in relative_path:
-        info['image_type'] = 'IHC (synapses)'
-    return info
-
-
-import io
-import numpy as np
-from PIL import Image
 
 
 def array_to_image(arr, format='JPEG', percentiles=(0.1, 99.9)):
@@ -104,7 +78,6 @@ def array_to_plotly(arr, percentiles=(0.1, 99.9)):
     given percentiles, then cast to uint8. Returns a plotly Figure ready
     to be returned from a plot callback.
     """
-    import numpy as np
     import plotly.express as px
 
     if arr.ndim != 3:
@@ -137,21 +110,88 @@ def array_to_plotly(arr, percentiles=(0.1, 99.9)):
     return fig
 
 
-def load_image_plotly(confocal_image_file):
-    path = Path(confocal_image_file.location.base_path) / confocal_image_file.relative_path
-    info, img = load_czi(path)
-    xy_proj = img.max(axis=-2)
-    return array_to_plotly(xy_proj)
+class Synaptogram(DataTypeDescription):
+    """Description for confocal synaptogram CZI images.
 
+    Parses filenames following the convention::
 
-def load_image(confocal_image_file):
-    path = Path(confocal_image_file.location.base_path) / confocal_image_file.relative_path
-    info, img = load_czi(path)
-    xy_proj = img.max(axis=-2)
-    return array_to_image(xy_proj)
+        <animal_id><ear>-63x-..._IHC_<frequency>_kHz...
+    """
 
+    def parse(self):
+        """Parse the synaptogram filename for metadata.
 
-#def load_image(relative_path, location):
-    #filename = Path(location.base_path) / relative_path
-    #print(filename)
-    #print(img.shape)
+        Returns
+        -------
+        dict or None
+            Keys: ``animal_id``, ``ear``, ``frequency``, ``image_type``,
+            and optionally ``IHCs`` and ``r`` (replicate).
+        """
+        if 'imaris' in str(self.path):
+            return None
+        if 'napari' in str(self.path):
+            return None
+        if '_exclude' in str(self.path):
+            return
+        if self.path.suffix != '.czi':
+            return None
+
+        def to_replicate(x):
+            if x is None:
+                return 'a'
+            x = x.lower()
+            replicate_map = {
+                'a': 'a', 'b': 'b', 'l': 'b', 'b2': 'b',
+                'a2': 'a', 'l2': 'b', 'h': 'b',
+            }
+            return replicate_map.get(x, 'b')
+
+        try:
+            info = P_SYNAPTOGRAM_FILENAME.match(self.path.stem).groupdict()
+        except AttributeError:
+            return None
+
+        info['ear'] = EAR_MAP[info['ear']]
+        info['frequency'] = pfreq_to_freq(info['frequency'])
+        info['IHCs'] = int(info['IHCs']) if info['IHCs'] else None
+        info['r'] = to_replicate(info.pop('replicate'))
+        if '63x' in str(self.path) and 'IHC' in str(self.path):
+            info['image_type'] = 'IHC (synapses)'
+        return info
+
+    def hash_files(self):
+        """Return the CZI file itself for hashing.
+
+        Returns
+        -------
+        list of Path
+        """
+        if self.path.exists():
+            return [self.path]
+        return []
+
+    @plot_callback('Confocal (zoomable)')
+    def load_image_plotly(self):
+        """Load the CZI and return a zoomable Plotly max-projection.
+
+        Returns
+        -------
+        plotly.graph_objects.Figure
+        """
+        from cochleogram.util import load_czi
+        info, img = load_czi(self.path)
+        xy_proj = img.max(axis=-2)
+        return array_to_plotly(xy_proj)
+
+    @image_callback('Confocal (JPEG)')
+    def load_image(self):
+        """Load the CZI and return a JPEG BytesIO of the max-projection.
+
+        Returns
+        -------
+        io.BytesIO
+        """
+        from cochleogram.util import load_czi
+        info, img = load_czi(self.path)
+        xy_proj = img.max(axis=-2)
+        return array_to_image(xy_proj)

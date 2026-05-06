@@ -8,12 +8,10 @@ import plotly.graph_objects as go
 from cftsdata.dataset import parse_psi_filename
 from cftsdata.summarize_abr import load_abr_waveforms
 
+from colony_manager.datatypes import (
+    DataTypeDescription, plot_callback, pdf_callback,
+)
 
-def parse_abr_io_filename(relative_path, location):
-    path = Path(location.base_path) / relative_path
-    if not path.stem.endswith('abr_io'):
-        return None
-    return parse_psi_filename(path)
 
 def plotly_waterfall(waveforms, waterfall_level='level', scale_method='mean', 
                      base_scale_multiplier=1, y_scale_bar_size=1, 
@@ -26,9 +24,9 @@ def plotly_waterfall(waveforms, waterfall_level='level', scale_method='mean',
     w_vals = waveforms.values
     n = len(w_vals)
     offset_step = 1 / (n + 1)
-    
+
     limits = [(w.min(), w.max()) for w in w_vals if not np.isnan(w).all()]
-    
+
     if scale_method == 'mean':
         base_scale = np.mean(np.abs(np.array(limits))) * base_scale_multiplier
     elif scale_method == 'max':
@@ -86,84 +84,156 @@ def plotly_waterfall(waveforms, waterfall_level='level', scale_method='mean',
     return traces, annotations, shapes
 
 
-def get_abr_pdf(data_file):
-    full_path = Path(data_file.location.base_path) / data_file.relative_path
-    return full_path / f'{full_path.name} ABR waveforms.pdf'
+class CFTSDataTypeDescription(DataTypeDescription):
+
+    experiment = None
+
+    def parse(self):
+        """Parse the folder name for animal/date metadata.
+
+        Returns
+        -------
+        dict or None
+            Parsed metadata with keys ``'animal_id'``, ``'date'``, etc.
+            Returns ``None`` if the path does not look like an ABR I/O folder.
+        """
+        if '_exclude' in str(self.path):
+            return None
+        if not self.path.stem.endswith(self.experiment):
+            return None
+        try:
+            return parse_psi_filename(self.path)
+        except ValueError:
+            return None
+
+    def hash_files(self):
+        """Return the psiexperiment dataset as the identity file for this
+        dataset.
+
+        Returns
+        -------
+        list of Path
+            The ABR zip file if it exists.
+        """
+        return [self.path / f'{self.path.name}.zip']
+
+    def _get_pdf(self, suffix):
+        """Return the path to the pre-generated PDF.
+
+        Returns
+        -------
+        Path
+        """
+        return self.path / f'{self.path.name} {suffix}'
 
 
-def load_abr(data_file):
-    full_path = Path(data_file.location.base_path) / data_file.relative_path
-    filename = full_path / f'{full_path.name} ABR average waveforms.csv'
-    df = load_abr_waveforms(filename)
+class ABRIO(CFTSDataTypeDescription):
 
-    fig = go.Figure()
-    buttons = []
-    
-    grouping = list(df.groupby('frequency')) # Cast to list so we can iterate twice safely
-    
-    # Trackers for our dropdown menus
-    all_annots = []
-    all_shapes = []
-    freq_trace_indices = []
-    total_traces = 0
+    experiment = 'abr_io'
 
-    # --- FIRST PASS: Add all traces to the figure and save layout elements ---
-    for i, (frequency, df_freq) in enumerate(grouping):
-        is_first = (i == 0)
-        traces, annots, shapes = plotly_waterfall(df_freq, is_visible=is_first)
-        
-        # Record which trace indices belong to this frequency
-        indices = list(range(total_traces, total_traces + len(traces)))
-        freq_trace_indices.append(indices)
-        total_traces += len(traces)
-        
-        for t in traces:
-            fig.add_trace(t)
-            
-        all_annots.append(annots)
-        all_shapes.append(shapes)
+    @plot_callback('Waveforms')
+    def load_waveforms(self):
+        """Build an interactive Plotly waterfall of ABR waveforms.
 
-        # Apply the layout elements for the first frequency so it looks right on load
-        if is_first:
-            fig.update_layout(annotations=annots, shapes=shapes)
+        Returns
+        -------
+        plotly.graph_objects.Figure
+        """
+        filename = self.path / f'{self.path.name} ABR average waveforms.csv'
+        df = load_abr_waveforms(filename)
 
-    # --- SECOND PASS: Build the dropdown buttons ---
-    for i, (frequency, _) in enumerate(grouping):
-        
-        # Create a boolean array perfectly matching the total number of traces
-        visible = [False] * total_traces
-        for idx in freq_trace_indices[i]:
-            visible[idx] = True
+        fig = go.Figure()
+        buttons = []
 
-        buttons.append(dict(
-            label=f"{frequency} Hz",
-            method="update",
-            args=[
-                {"visible": visible}, # Updates the traces
-                {
-                    "annotations": all_annots[i], # Swaps in the correct labels
-                    "shapes": all_shapes[i],      # Swaps in the correct scale bar
-                }
-            ]
-        ))
+        grouping = list(df.groupby('frequency'))
 
-    # --- Final Layout ---
-    fig.update_layout(
-        template="plotly_white",
-        showlegend=False,
-        margin=dict(l=120, r=40, t=20, b=40),
-        yaxis=dict(fixedrange=True, showticklabels=False, zeroline=False, showgrid=False),
-        xaxis=dict(fixedrange=True, title="Time", showgrid=True, zeroline=False),
-        updatemenus=[dict(
-            active=0,
-            buttons=buttons,
-            x=0.0,
-            y=1.15,
-            xanchor="left",
-            yanchor="top",
-            direction="down",
-            showactive=True,
-        )]
-    )
+        all_annots = []
+        all_shapes = []
+        freq_trace_indices = []
+        total_traces = 0
 
-    return fig
+        for i, (frequency, df_freq) in enumerate(grouping):
+            is_first = (i == 0)
+            traces, annots, shapes = plotly_waterfall(df_freq, is_visible=is_first)
+
+            indices = list(range(total_traces, total_traces + len(traces)))
+            freq_trace_indices.append(indices)
+            total_traces += len(traces)
+
+            for t in traces:
+                fig.add_trace(t)
+
+            all_annots.append(annots)
+            all_shapes.append(shapes)
+
+            if is_first:
+                fig.update_layout(annotations=annots, shapes=shapes)
+
+        for i, (frequency, _) in enumerate(grouping):
+            visible = [False] * total_traces
+            for idx in freq_trace_indices[i]:
+                visible[idx] = True
+
+            buttons.append(dict(
+                label=f"{frequency} Hz",
+                method="update",
+                args=[
+                    {"visible": visible},
+                    {
+                        "annotations": all_annots[i],
+                        "shapes": all_shapes[i],
+                    }
+                ]
+            ))
+
+        fig.update_layout(
+            template="plotly_white",
+            showlegend=False,
+            margin=dict(l=120, r=40, t=20, b=40),
+            yaxis=dict(fixedrange=True, showticklabels=False, zeroline=False, showgrid=False),
+            xaxis=dict(fixedrange=True, title="Time", showgrid=True, zeroline=False),
+            updatemenus=[dict(
+                active=0,
+                buttons=buttons,
+                x=0.0,
+                y=1.15,
+                xanchor="left",
+                yanchor="top",
+                direction="down",
+                showactive=True,
+            )]
+        )
+
+        return fig
+
+    @pdf_callback('Waveforms PDF')
+    def get_waveforms_pdf(self):
+        """Return the path to the pre-generated waveform PDF.
+
+        Returns
+        -------
+        Path
+        """
+        return self._get_pdf('ABR waveforms.pdf')
+
+
+class DPOAEIO(CFTSDataTypeDescription):
+
+    experiment = 'dpoae_io'
+
+    @pdf_callback('IO PDF')
+    def get_io_pdf(self):
+        return self._get_pdf('io.pdf')
+
+    @pdf_callback('Thresholds PDF')
+    def get_th_pdf(self):
+        return self._get_pdf('th.pdf')
+
+
+class IEC(CFTSDataTypeDescription):
+
+    experiment = 'inear_speaker_calibration_chirp'
+
+    @pdf_callback('Calibration PDF')
+    def get_calibration_pdf(self):
+        return self._get_pdf('calibration.pdf')
