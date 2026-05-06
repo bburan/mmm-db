@@ -1,13 +1,55 @@
+import hashlib
 import io
+import os
 import re
+import tempfile
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
 from colony_manager.datatypes import (
-    DataTypeDescription, plot_callback, image_callback,
+    DataTypeDescription, plot_callback, image_callback, cache_root,
 )
+
+
+def _load_czi_xy_proj(path):
+    """Return the XY max-projection of a CZI, caching it to disk.
+
+    The cache key folds in the source's path + mtime + size, so any
+    in-place modification invalidates automatically. Cached arrays are
+    written atomically via tempfile + ``os.replace``. Both the Plotly
+    and JPEG confocal callbacks share this cache, which lives under the
+    shared ``COLONY_MANAGER_CACHE_DIR`` root (``czi-maxproj``
+    subnamespace).
+    """
+    path = Path(path)
+    stat = path.stat()
+    key = hashlib.sha1(
+        f'{path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}'.encode('utf-8'),
+    ).hexdigest()
+    cache_path = cache_root('czi-maxproj') / key[:2] / f'{key[2:]}.npy'
+
+    if cache_path.exists():
+        return np.load(cache_path, allow_pickle=False)
+
+    from cochleogram.util import load_czi
+    _, img = load_czi(path)
+    xy_proj = img.max(axis=-2)
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(suffix='.npy', dir=cache_path.parent)
+    os.close(fd)
+    try:
+        np.save(tmp, xy_proj, allow_pickle=False)
+        os.replace(tmp, cache_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return xy_proj
 
 
 P_SYNAPTOGRAM_FILENAME = re.compile(
@@ -178,10 +220,7 @@ class Synaptogram(DataTypeDescription):
         -------
         plotly.graph_objects.Figure
         """
-        from cochleogram.util import load_czi
-        info, img = load_czi(self.path)
-        xy_proj = img.max(axis=-2)
-        return array_to_plotly(xy_proj)
+        return array_to_plotly(_load_czi_xy_proj(self.path))
 
     @image_callback('Confocal (JPEG)')
     def load_image(self):
@@ -191,7 +230,4 @@ class Synaptogram(DataTypeDescription):
         -------
         io.BytesIO
         """
-        from cochleogram.util import load_czi
-        info, img = load_czi(self.path)
-        xy_proj = img.max(axis=-2)
-        return array_to_image(xy_proj)
+        return array_to_image(_load_czi_xy_proj(self.path))
