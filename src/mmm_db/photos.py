@@ -13,7 +13,7 @@ P_ANIMAL_PHOTO = re.compile(
 
 
 P_DISSECTION_NOTES = re.compile(
-    r'^(?P<ids>.+?)\s+.*?$'
+    r'^(?P<ids>.+?)(?:\s+-\s+(?P<note>.+))?$'
 )
 
 
