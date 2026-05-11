@@ -17,7 +17,7 @@ P_DISSECTION_NOTES = re.compile(
 )
 
 
-class AnimalPhotoDescription(DataTypeDescription):
+class AnimalPhoto(DataTypeDescription):
     """Description for animal photo files.
 
     Filename convention::
@@ -76,7 +76,7 @@ class AnimalPhotoDescription(DataTypeDescription):
         return []
 
 
-class EarDissectionNotesDescription(DataTypeDescription):
+class EarDissectionNotes(DataTypeDescription):
     """Description for ear-dissection-notes images.
 
     Filename convention::
