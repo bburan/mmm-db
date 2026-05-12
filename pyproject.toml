@@ -12,8 +12,10 @@ maintainers = [
 ]
 dependencies = [
     'cochleogram[lif,czi]',
+    'psidata>=0.1.13',
     'cftsdata[zarr]>=0.1.9',
-    'abtsdata>=0.0.1',
+    'abtsdata>=0.0.2',
+    'plotly',
 ]
 dynamic = ["version"]
 
