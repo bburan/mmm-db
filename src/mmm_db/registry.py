@@ -6,6 +6,7 @@ from mmm_db import photos
 
 DESCRIPTION_CLASSES = {
     'ABTS: Modulation GoNogo': abtsdata.ModulationGoNogo,
+    'ABTS: Gap Detection GoNogo': abtsdata.GapDetectionGoNogo,
     'CFTS: ABR IO': cftsdata.ABRIO,
     'CFTS: DPOAE IO': cftsdata.DPOAEIO,
     'CFTS: IEC': cftsdata.IEC,

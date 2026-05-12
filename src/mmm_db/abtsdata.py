@@ -18,3 +18,11 @@ class ModulationGoNogo(ABTSDataTypeDescription):
     @pdf_callback('Performance')
     def get_io_pdf(self):
         return self._get_pdf('performance.pdf')
+
+
+class GapDetectionGoNogo(ABTSDataTypeDescription):
+    experiment = 'gap-detection'
+
+    @pdf_callback('Performance')
+    def get_io_pdf(self):
+        return self._get_pdf('performance.pdf')
