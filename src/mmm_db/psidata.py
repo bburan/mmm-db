@@ -1,5 +1,32 @@
 from colony_manager.datatypes import DataTypeDescription
 
+import pandas as pd
+
+
+def summarize_stretches(s: pd.Series) -> str:
+    """
+    Summarizes consecutive identical values in a pandas Series.
+    """
+    if s.empty:
+        return ""
+
+    # 1. Identify where the value changes from the previous row
+    # s.ne(s.shift()) returns True whenever a value differs from the one before it
+    # .cumsum() creates a unique ID for each "stretch" of identical values
+    blocks = s.ne(s.shift()).cumsum()
+
+    # 2. Group by those blocks and aggregate the first value and the count
+    summary = s.groupby(blocks).agg(['first', 'size'])
+
+    # 3. If there is only one block, just return the value (per your requirement)
+    if len(summary) == 1:
+        return str(summary['first'].iloc[0])
+
+    # 4. Otherwise, format the blocks into a readable string
+    parts = [f"{val} ({count})" for val, count in zip(summary['first'], summary['size'])]
+
+    return ", ".join(parts)
+
 
 class PSIDataTypeDescription(DataTypeDescription):
 
