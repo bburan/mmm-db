@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from psiaudio.util import nearest_octave
+
 from colony_manager.datatypes import (
     DataTypeDescription, plot_callback, image_callback, cache_root,
 )
@@ -64,9 +66,12 @@ P_SYNAPTOGRAM_FILENAME = re.compile(
 EAR_MAP = {'L': 'Left', 'R': 'Right'}
 
 
-def pfreq_to_freq(x):
+def pfreq_to_freq(x, octave_step=0.5):
     a, b = x.split('p')
-    return int(a) + int(b) / 10
+    freq = int(a) + int(b) / 10
+    if octave_step is not None:
+        freq = nearest_octave(freq, octave_step, si_prefix='k').round(1)
+    return float(freq)
 
 
 def array_to_image(arr, format='JPEG', percentiles=(0.1, 99.9)):

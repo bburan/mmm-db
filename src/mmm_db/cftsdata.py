@@ -89,10 +89,7 @@ def plotly_waterfall(waveforms, waterfall_level='level', scale_method='mean',
 class CFTSDataTypeDescription(PSIDataTypeDescription):
 
     def _parse(self, filename):
-        #return parse_psi_filename(filename)
-        result = parse_psi_filename(filename)
-        print(result)
-        return result
+        return parse_psi_filename(filename)
 
 
 class ABRIO(CFTSDataTypeDescription):
