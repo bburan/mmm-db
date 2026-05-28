@@ -64,6 +64,10 @@ class PSIDataTypeDescription(DataTypeDescription):
         """
         return [self.path / f'{self.path.name}.zip']
 
+    def get_file(self, suffix):
+        return self.path / f'{self.path.name} {suffix}'
+
+
     def _get_pdf(self, suffix):
         """Return the path to the pre-generated PDF.
 
@@ -71,4 +75,4 @@ class PSIDataTypeDescription(DataTypeDescription):
         -------
         Path
         """
-        return self.path / f'{self.path.name} {suffix}'
+        return self.get_file(suffix)
