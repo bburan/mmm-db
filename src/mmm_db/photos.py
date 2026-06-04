@@ -1,4 +1,5 @@
 """Description classes for free-form photos attached to animals."""
+from pathlib import Path
 import re
 from datetime import datetime
 
@@ -75,6 +76,14 @@ class AnimalPhoto(DataTypeDescription):
             return [self.path]
         return []
 
+    @classmethod
+    def upload_filename(cls, targets, original_filename, *, date, notes):
+        ext = Path(original_filename).suffix.lower() or '.jpg'
+        date_str = date.strftime('%Y%m%d')
+        target_str = ' '.join(t.custom_id for t in targets)
+        notes_str = f' - {notes}' if notes else ''
+        return f'{target_str}/{date_str} - {target_str}{notes_str}{ext}'
+
 
 class EarDissectionNotes(DataTypeDescription):
     """Description for ear-dissection-notes images.
@@ -140,3 +149,14 @@ class EarDissectionNotes(DataTypeDescription):
         if self.path.exists():
             return [self.path]
         return []
+
+    @classmethod
+    def upload_filename(cls, targets, original_filename, *, date, notes):
+        ext = Path(original_filename).suffix.lower() or '.pdf'
+        _side = {'Left': 'L', 'Right': 'R'}
+        target_str = ' '.join(
+            f'{t.animal.custom_id}{_side.get(t.side, "")}'
+            for t in targets
+        )
+        notes_str = f' - {notes}' if notes else ''
+        return f'{target_str}{notes_str}{ext}'
