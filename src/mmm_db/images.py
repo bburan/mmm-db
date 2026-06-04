@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import os
 import re
 import tempfile
@@ -16,7 +17,11 @@ from colony_manager.datatypes import (
 
 
 def _load_czi_xy_proj(path):
-    """Return the XY max-projection of a CZI, caching it to disk.
+    """Return ``(info, xy_proj)`` for a CZI, caching both to disk.
+
+    ``info`` is a dict with ``voxel_size`` and ``lower`` (both lists of
+    floats in μm), taken from the CZI stage metadata.  ``xy_proj`` is the
+    XY max-projection as a ``(X, Y, C)`` uint8 array.
 
     The cache key folds in the source's path + mtime + size, so any
     in-place modification invalidates automatically. Cached arrays are
@@ -30,28 +35,43 @@ def _load_czi_xy_proj(path):
     key = hashlib.sha1(
         f'{path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}'.encode('utf-8'),
     ).hexdigest()
-    cache_path = cache_root('czi-maxproj') / key[:2] / f'{key[2:]}.npy'
+    cache_dir = cache_root('czi-maxproj') / key[:2]
+    cache_npy = cache_dir / f'{key[2:]}.npy'
+    cache_json = cache_dir / f'{key[2:]}.json'
 
-    if cache_path.exists():
-        return np.load(cache_path, allow_pickle=False)
+    if cache_npy.exists() and cache_json.exists():
+        info = json.loads(cache_json.read_text())
+        return info, np.load(cache_npy, allow_pickle=False)
 
     from cochleogram.util import load_czi
-    _, img = load_czi(path)
+    raw_info, img = load_czi(path)
     xy_proj = img.max(axis=-2)
 
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(suffix='.npy', dir=cache_path.parent)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(suffix='.npy', dir=cache_dir)
     os.close(fd)
     try:
         np.save(tmp, xy_proj, allow_pickle=False)
-        os.replace(tmp, cache_path)
+        os.replace(tmp, cache_npy)
     except Exception:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
-    return xy_proj
+
+    channels = [
+        {'name': str(ch.get('name', '')),
+         'display_color': str(ch.get('display_color', ''))}
+        for ch in raw_info.get('channels', [])
+    ]
+    info = {
+        'voxel_size': list(raw_info['voxel_size']),
+        'lower': list(raw_info['lower']),
+        'channels': channels,
+    }
+    cache_json.write_text(json.dumps(info))
+    return info, xy_proj
 
 
 P_IMAGE_FILENAME = re.compile(
@@ -210,7 +230,8 @@ class CZIDataTypeDescription(DataTypeDescription):
         -------
         plotly.graph_objects.Figure
         """
-        return array_to_plotly(_load_czi_xy_proj(self.path))
+        _, arr = _load_czi_xy_proj(self.path)
+        return array_to_plotly(arr)
 
     @image_callback('Confocal (JPEG)')
     def load_image(self):
@@ -220,7 +241,8 @@ class CZIDataTypeDescription(DataTypeDescription):
         -------
         io.BytesIO
         """
-        return array_to_image(_load_czi_xy_proj(self.path))
+        _, arr = _load_czi_xy_proj(self.path)
+        return array_to_image(arr)
 
     def parse(self):
         """Parse the image filename for metadata.
@@ -274,18 +296,124 @@ class IHCOHCCount(CZIDataTypeDescription):
     pass
 
 
+def _parse_channel_color(display_color):
+    """Return '#RRGGBB' from a CZI display_color string.
+
+    Zeiss stores colors as '#AARRGGBB' (ARGB); standard '#RRGGBB' is also
+    accepted.  Returns None if the string can't be parsed.
+    """
+    if not display_color or not display_color.startswith('#'):
+        return None
+    h = display_color.lstrip('#')
+    if len(h) == 8:
+        return f'#{h[2:]}'
+    if len(h) == 6:
+        return f'#{h}'
+    return None
+
+
+_CHANNEL_DEFAULT_COLORS = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff']
+
+
+def _channels_to_plotly(arr, channels=None):
+    """Convert an (X, Y, C) uint8 array to a Plotly figure with one toggleable
+    heatmap trace per channel.
+
+    Each channel uses a transparent-to-color colorscale so that low-intensity
+    regions are see-through and the black background shows through.  Traces
+    are named from the CZI metadata when available and can be toggled via the
+    Plotly legend.
+    """
+    import plotly.graph_objects as go
+
+    img = np.transpose(arr, (1, 0, 2)).astype(np.float32)
+    n_c = img.shape[2]
+    fig = go.Figure()
+
+    lo_p, hi_p = 0.1, 99.9
+    for c in range(n_c):
+        ch_info = channels[c] if channels and c < len(channels) else {}
+        name = ch_info.get('name') or f'Channel {c + 1}'
+        color = (_parse_channel_color(ch_info.get('display_color', ''))
+                 or _CHANNEL_DEFAULT_COLORS[c % len(_CHANNEL_DEFAULT_COLORS)])
+        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+
+        ch = img[:, :, c]
+        lo, hi = np.percentile(ch, [lo_p, hi_p])
+        scaled = (ch - lo) / (hi - lo) if hi > lo else np.zeros_like(ch)
+        z = np.clip(scaled, 0, 1)
+
+        fig.add_trace(go.Heatmap(
+            z=z,
+            colorscale=[[0, f'rgba({r},{g},{b},0)'], [1, f'rgba({r},{g},{b},1)']],
+            zmin=0, zmax=1,
+            showscale=False,
+            name=name,
+        ))
+
+    toggle_buttons = []
+    for i in range(n_c):
+        ch_info_i = channels[i] if channels and i < len(channels) else {}
+        label = ch_info_i.get('name') or f'Channel {i + 1}'
+        toggle_buttons.append(dict(
+            label=label,
+            method='restyle',
+            args=[{'visible': True}, [i]],
+            args2=[{'visible': False}, [i]],
+        ))
+
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=36, b=0),
+        dragmode='zoom',
+        paper_bgcolor='black',
+        plot_bgcolor='black',
+        showlegend=False,
+        updatemenus=[dict(
+            type='buttons',
+            direction='right',
+            buttons=toggle_buttons,
+            x=0.0,
+            y=1.0,
+            xanchor='left',
+            yanchor='bottom',
+            showactive=True,
+            bgcolor='rgba(60,60,60,0.9)',
+            bordercolor='rgba(180,180,180,0.4)',
+            font=dict(color='white', size=11),
+            pad=dict(r=4, t=4),
+        )],
+    )
+    fig.update_xaxes(showticklabels=False, constrain='domain')
+    fig.update_yaxes(showticklabels=False, scaleanchor='x', constrain='domain',
+                     autorange='reversed')
+    return fig
+
+
+_CELL_COLORS = {
+    'IHC': '#0dcaf0',
+    'OHC1': '#198754',
+    'OHC2': '#ffc107',
+    'OHC3': '#fd7e14',
+    'Extra': '#6f42c1',
+}
+
+
 class IHCOHCCountAnalysis(DataTypeDescription):
 
     def hash_files(self):
-        """Return the CZI file itself for hashing.
+        """Return the analysis JSON and associated CZI for hashing.
 
         Returns
         -------
         list of Path
         """
+        paths = []
         if self.path.exists():
-            return [self.path]
-        return []
+            paths.append(self.path)
+        czi = self.path.parent / self.path.name.replace('_analysis.json', '.czi')
+        if czi.exists():
+            paths.append(czi)
+        return paths
 
     def parse(self):
         if '_exclude' in str(self.path):
@@ -293,3 +421,63 @@ class IHCOHCCountAnalysis(DataTypeDescription):
         if not self.path.name.endswith('_analysis.json'):
             return None
         return parse_filename(self.path)
+
+    def _load_base(self):
+        czi_path = self.path.parent / self.path.name.replace('_analysis.json', '.czi')
+        info, arr = _load_czi_xy_proj(czi_path)
+        analysis = json.loads(self.path.read_text())
+        data = analysis.get('data', analysis)
+        return info, arr, data
+
+    def _add_overlays(self, fig, info, data):
+        """Overlay spline paths and cell markers onto *fig* (in-place)."""
+        import plotly.graph_objects as go
+        from cochleogram.model import Points
+
+        vx, vy = info['voxel_size'][0], info['voxel_size'][1]
+        lx, ly = info['lower'][0], info['lower'][1]
+
+        def to_px(xs, ys):
+            return [(x - lx) / vx for x in xs], [(y - ly) / vy for y in ys]
+
+        for cell_type, color in _CELL_COLORS.items():
+            spiral_state = data.get('spirals', {}).get(cell_type, {})
+            if spiral_state.get('x'):
+                p = Points(x=spiral_state['x'], y=spiral_state['y'],
+                           origin=spiral_state.get('origin', 0))
+                xi, yi = p.interpolate()
+                if len(xi):
+                    px_x, px_y = to_px(xi, yi)
+                    fig.add_trace(go.Scatter(
+                        x=px_x, y=px_y,
+                        mode='lines',
+                        name=f'{cell_type} path',
+                        line=dict(color=color, width=1.5),
+                    ))
+
+        for cell_type, color in _CELL_COLORS.items():
+            cells = data.get('cells', {}).get(cell_type, {})
+            xc, yc = cells.get('x', []), cells.get('y', [])
+            if xc:
+                px_x, px_y = to_px(xc, yc)
+                fig.add_trace(go.Scatter(
+                    x=px_x, y=px_y,
+                    mode='markers',
+                    name=cell_type,
+                    marker=dict(color=color, size=8,
+                                line=dict(color='white', width=0.5)),
+                ))
+
+    @plot_callback('IHC and OHC counts')
+    def load_count_plot(self):
+        info, arr, data = self._load_base()
+        fig = array_to_plotly(arr)
+        self._add_overlays(fig, info, data)
+        return fig
+
+    @plot_callback('IHC and OHC counts (channels)')
+    def load_count_plot_channels(self):
+        info, arr, data = self._load_base()
+        fig = _channels_to_plotly(arr, info.get('channels'))
+        self._add_overlays(fig, info, data)
+        return fig
