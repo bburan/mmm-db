@@ -11,6 +11,9 @@ DESCRIPTION_CLASSES = {
     'CFTS: DPOAE IO': cftsdata.DPOAEIO,
     'CFTS: IEC': cftsdata.IEC,
     'Histology: Synaptogram': images.Synaptogram,
+    'Histology: Synaptogram (Analysis)': images.SynaptogramAnalysis,
+    'Histology: IHC and OHC counts': images.IHCOHCCount,
+    'Histology: IHC and OHC counts (Analysis)': images.IHCOHCCountAnalysis,
     'Photos: Animal': photos.AnimalPhoto,
     'Photos: Ear Dissection Notes': photos.EarDissectionNotes,
 }

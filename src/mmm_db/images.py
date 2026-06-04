@@ -54,9 +54,9 @@ def _load_czi_xy_proj(path):
     return xy_proj
 
 
-P_SYNAPTOGRAM_FILENAME = re.compile(
+P_IMAGE_FILENAME = re.compile(
     r'(?P<animal_id>[-\w]+)'
-    r'(?P<ear>L|R)-63x-[-\w]+[_-]IHC[_-]'
+    r'(?P<ear>L|R)-63x-[-\w]+[_-](?P<image>IHC|IHC-OHC)[_-]'
     r'(?P<frequency>[p\d]+)_kHz\w?[_-]?'
     # Allow for notes at end after the kHz. The negative lookahead makes sure
     # that the replicate doesn't try to consume the number of IHCs instead.
@@ -72,6 +72,37 @@ def pfreq_to_freq(x, octave_step=0.5):
     if octave_step is not None:
         freq = nearest_octave(freq, octave_step, si_prefix='k').round(1)
     return float(freq)
+
+
+def parse_filename(path):
+    def to_replicate(x):
+        if x is None:
+            return 'a'
+        x = x.lower()
+        replicate_map = {
+            'a': 'a', 'b': 'b', 'l': 'b', 'b2': 'b',
+            'a2': 'a', 'l2': 'b', 'h': 'b',
+        }
+        return replicate_map.get(x, 'b')
+
+    try:
+        info = P_IMAGE_FILENAME.match(path.stem).groupdict()
+    except AttributeError:
+        return None
+
+    info['ear'] = EAR_MAP[info['ear']]
+    info['frequency'] = pfreq_to_freq(info['frequency'])
+    info['IHCs'] = int(info['IHCs']) if info['IHCs'] else None
+    info['r'] = to_replicate(info.pop('replicate'))
+    image_type = info.pop('image')
+
+    if image_type == 'IHC':
+        info['image_type'] = 'IHC (synapses)'
+    elif image_type == 'IHC-OHC':
+        info['image_type'] = 'IHC and OHC (counts)'
+    else:
+        return None
+    return info
 
 
 def array_to_image(arr, format='JPEG', percentiles=(0.1, 99.9)):
@@ -157,55 +188,9 @@ def array_to_plotly(arr, percentiles=(0.1, 99.9)):
     return fig
 
 
-class Synaptogram(DataTypeDescription):
-    """Description for confocal synaptogram CZI images.
-
-    Parses filenames following the convention::
-
-        <animal_id><ear>-63x-..._IHC_<frequency>_kHz...
+class CZIDataTypeDescription(DataTypeDescription):
+    """Description for confocal CZI images.
     """
-
-    def parse(self):
-        """Parse the synaptogram filename for metadata.
-
-        Returns
-        -------
-        dict or None
-            Keys: ``animal_id``, ``ear``, ``frequency``, ``image_type``,
-            and optionally ``IHCs`` and ``r`` (replicate).
-        """
-        if 'imaris' in str(self.path):
-            return None
-        if 'napari' in str(self.path):
-            return None
-        if '_exclude' in str(self.path):
-            return
-        if self.path.suffix != '.czi':
-            return None
-
-        def to_replicate(x):
-            if x is None:
-                return 'a'
-            x = x.lower()
-            replicate_map = {
-                'a': 'a', 'b': 'b', 'l': 'b', 'b2': 'b',
-                'a2': 'a', 'l2': 'b', 'h': 'b',
-            }
-            return replicate_map.get(x, 'b')
-
-        try:
-            info = P_SYNAPTOGRAM_FILENAME.match(self.path.stem).groupdict()
-        except AttributeError:
-            return None
-
-        info['ear'] = EAR_MAP[info['ear']]
-        info['frequency'] = pfreq_to_freq(info['frequency'])
-        info['IHCs'] = int(info['IHCs']) if info['IHCs'] else None
-        info['r'] = to_replicate(info.pop('replicate'))
-        if '63x' in str(self.path) and 'IHC' in str(self.path):
-            info['image_type'] = 'IHC (synapses)'
-        return info
-
     def hash_files(self):
         """Return the CZI file itself for hashing.
 
@@ -236,3 +221,75 @@ class Synaptogram(DataTypeDescription):
         io.BytesIO
         """
         return array_to_image(_load_czi_xy_proj(self.path))
+
+    def parse(self):
+        """Parse the image filename for metadata.
+
+        Returns
+        -------
+        dict or None
+            Keys: ``animal_id``, ``ear``, ``frequency``, ``image_type``,
+            and optionally ``IHCs`` and ``r`` (replicate).
+        """
+        if 'imaris' in str(self.path):
+            return None
+        if 'napari' in str(self.path):
+            return None
+        if '_exclude' in str(self.path):
+            return
+        if self.path.suffix != '.czi':
+            return None
+        return parse_filename(self.path)
+
+
+class Synaptogram(CZIDataTypeDescription):
+    pass
+
+
+class SynaptogramAnalysis(DataTypeDescription):
+
+    def hash_files(self):
+        """Return the CZI file itself for hashing.
+
+        Returns
+        -------
+        list of Path
+        """
+        if self.path.exists():
+            return [self.path]
+        return []
+
+    def parse(self):
+        if '_exclude' in str(self.path):
+            return
+        if self.path.suffix not in ('.syn', '.ims'):
+            return None
+        if self.path.suffix == '.ims':
+            if not self.path.name.endswith('_IHC.ims'):
+                return None
+        return parse_filename(self.path)
+
+
+class IHCOHCCount(CZIDataTypeDescription):
+    pass
+
+
+class IHCOHCCountAnalysis(DataTypeDescription):
+
+    def hash_files(self):
+        """Return the CZI file itself for hashing.
+
+        Returns
+        -------
+        list of Path
+        """
+        if self.path.exists():
+            return [self.path]
+        return []
+
+    def parse(self):
+        if '_exclude' in str(self.path):
+            return
+        if not self.path.name.endswith('_analysis.json'):
+            return None
+        return parse_filename(self.path)
