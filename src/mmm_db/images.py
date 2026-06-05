@@ -268,15 +268,64 @@ class Synaptogram(CZIDataTypeDescription):
     pass
 
 
+_MARKER_COLORS = {
+    'CtBP2': '#ff0000',
+    'MyosinVIIa': '#0000ff',
+    'GluR2': '#00ff00',
+}
+
+_NAPARI_COLORMAP_TO_HEX = {
+    'red': '#ff0000',
+    'green': '#00ff00',
+    'blue': '#0000ff',
+    'cyan': '#00ffff',
+    'magenta': '#ff00ff',
+    'yellow': '#ffff00',
+    'white': '#ffffff',
+    'gray': '#808080',
+    'grey': '#808080',
+}
+
+
+def _add_synapse_toggle(fig, n_channel_traces, n_point_traces):
+    """Append a Synapses on/off button group to *fig* (in-place)."""
+    if not n_point_traces:
+        return
+    indices = list(range(n_channel_traces, n_channel_traces + n_point_traces))
+    fig.update_layout(updatemenus=list(fig.layout.updatemenus) + [dict(
+        type='buttons',
+        buttons=[
+            dict(label='Synapses on', method='restyle',
+                 args=[{'visible': True}, indices]),
+            dict(label='Synapses off', method='restyle',
+                 args=[{'visible': False}, indices]),
+        ],
+        active=0,
+        x=1.0, y=1.0,
+        xanchor='right', yanchor='bottom',
+        showactive=True,
+        bgcolor='rgba(60,60,60,0.9)',
+        bordercolor='rgba(180,180,180,0.4)',
+        font=dict(color='white', size=11),
+        pad=dict(r=4, t=4),
+    )])
+
+
+def _scatter_synapses(fig, name, xi, yi):
+    """Add a synapse scatter trace to *fig* (in-place)."""
+    import plotly.graph_objects as go
+    fig.add_trace(go.Scatter(
+        x=xi, y=yi,
+        mode='markers',
+        name=name,
+        marker=dict(size=8, color='white', symbol='circle-open',
+                    line=dict(width=2)),
+    ))
+
+
 class SynaptogramAnalysis(DataTypeDescription):
 
     def hash_files(self):
-        """Return the CZI file itself for hashing.
-
-        Returns
-        -------
-        list of Path
-        """
         if self.path.exists():
             return [self.path]
         return []
@@ -290,6 +339,118 @@ class SynaptogramAnalysis(DataTypeDescription):
             if not self.path.name.endswith('_IHC.ims'):
                 return None
         return parse_filename(self.path)
+
+    @plot_callback('Synaptogram')
+    def load_synaptogram_plot(self):
+        import pandas as pd
+        import tifffile
+        from io import StringIO
+
+        with tifffile.TiffFile(str(self.path)) as fh:
+            metadata = json.loads(fh.pages[0].description)
+            image = fh.asarray()  # (X, Y, Z, n_channels)
+
+        xy_proj = image.max(axis=2)  # (X, Y, n_channels)
+
+        names = metadata.get('name', [])
+        colormaps = metadata.get('colormap', [])
+
+        # Prefer masked layers; fall back to all layers if none exist.
+        indices = [i for i, n in enumerate(names) if 'masked' in n.lower()]
+        if not indices:
+            indices = list(range(len(names)))
+
+        xy_proj = xy_proj[..., indices]
+        channels = [
+            {'name': names[i],
+             'display_color': _NAPARI_COLORMAP_TO_HEX.get(colormaps[i], '#ffffff')}
+            for i in indices
+        ]
+
+        fig = _channels_to_plotly(xy_proj, channels)
+
+        n_point_traces = 0
+        for layer_name, points_md in metadata.get('points', {}).items():
+            df = pd.read_csv(StringIO(points_md['data']))
+            _scatter_synapses(fig, layer_name, df['x'], df['y'])
+            n_point_traces += 1
+
+        _add_synapse_toggle(fig, len(channels), n_point_traces)
+        return fig
+
+    @plot_callback('Synaptogram (IMS)')
+    def load_ims_plot(self):
+        import h5py
+
+        def _str(attrs, key):
+            return ''.join(attrs[key].astype('U'))
+
+        def _val(attrs, key):
+            return float(_str(attrs, key))
+
+        with h5py.File(str(self.path), 'r') as fh:
+            img_attrs = fh['DataSetInfo/Image'].attrs
+            xlb = _val(img_attrs, 'ExtMin0'); xub = _val(img_attrs, 'ExtMax0')
+            ylb = _val(img_attrs, 'ExtMin1'); yub = _val(img_attrs, 'ExtMax1')
+            nx = int(_val(img_attrs, 'X'))
+            ny = int(_val(img_attrs, 'Y'))
+            nz = int(_val(img_attrs, 'Z'))
+            vx = abs(xub - xlb) / nx
+            vy = abs(yub - ylb) / ny
+
+            # Image: one HDF5 node per channel under ResolutionLevel 0 / TimePoint 0
+            raw, emission, ch_names, ch_colors = [], [], [], []
+            tp = fh['DataSet/ResolutionLevel 0/TimePoint 0']
+            for i, ch_node in enumerate(tp.values()):
+                raw.append(ch_node['Data'][:][..., np.newaxis])
+                c_attrs = fh[f'DataSetInfo/Channel {i}'].attrs
+                e = _str(c_attrs, 'LSMEmissionWavelength')
+                emission.append(float(e.split('-')[0]))
+                try:
+                    ch_names.append(_str(c_attrs, 'Name'))
+                except KeyError:
+                    ch_names.append(f'Channel {i + 1}')
+                try:
+                    # Imaris stores Color as space-separated RGB floats 0–1
+                    rgb = [int(float(v) * 255)
+                           for v in _str(c_attrs, 'Color').split()]
+                    ch_colors.append(f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}')
+                except Exception:
+                    ch_colors.append(None)
+
+            i_sort = np.argsort(emission)
+            data = np.concatenate(raw, axis=-1)          # (z, y, x, n_ch)
+            data = data[:nz, :ny, :nx, :][:, :, :, i_sort]
+            data = data.swapaxes(0, 2)                   # (x, y, z, n_ch)
+
+            channels = []
+            for i_c in i_sort:
+                name = ch_names[i_c]
+                color = (ch_colors[i_c]
+                         or _MARKER_COLORS.get(name, '#ffffff'))
+                channels.append({'name': name, 'display_color': color})
+
+            # Points: physical μm → pixel indices
+            points_by_marker = {}
+            for node_name, node in fh['Scene/Content'].items():
+                if not node_name.startswith('Points'):
+                    continue
+                if 'CoordsXYZR' not in node:
+                    continue
+                marker = node.attrs['Name'][0].decode('utf')
+                coords = node['CoordsXYZR'][:]          # (n, 4): x, y, z, r
+                xi = np.round((coords[:, 0] - xlb) / vx).astype(int)
+                yi = np.round((coords[:, 1] - ylb) / vy).astype(int)
+                points_by_marker[marker] = (xi, yi)
+
+        xy_proj = data.max(axis=2)                      # (x, y, n_ch)
+        fig = _channels_to_plotly(xy_proj, channels)
+
+        for marker, (xi, yi) in points_by_marker.items():
+            _scatter_synapses(fig, marker, xi, yi)
+
+        _add_synapse_toggle(fig, len(channels), len(points_by_marker))
+        return fig
 
 
 class IHCOHCCount(CZIDataTypeDescription):
@@ -351,15 +512,19 @@ def _channels_to_plotly(arr, channels=None):
             name=name,
         ))
 
-    toggle_buttons = []
+    trace_indices = list(range(n_c))
+    buttons = [dict(
+        label='All',
+        method='restyle',
+        args=[{'visible': [True] * n_c}, trace_indices],
+    )]
     for i in range(n_c):
         ch_info_i = channels[i] if channels and i < len(channels) else {}
         label = ch_info_i.get('name') or f'Channel {i + 1}'
-        toggle_buttons.append(dict(
+        buttons.append(dict(
             label=label,
             method='restyle',
-            args=[{'visible': True}, [i]],
-            args2=[{'visible': False}, [i]],
+            args=[{'visible': [j == i for j in range(n_c)]}, trace_indices],
         ))
 
     fig.update_layout(
@@ -371,7 +536,8 @@ def _channels_to_plotly(arr, channels=None):
         updatemenus=[dict(
             type='buttons',
             direction='right',
-            buttons=toggle_buttons,
+            buttons=buttons,
+            active=0,
             x=0.0,
             y=1.0,
             xanchor='left',
@@ -383,9 +549,9 @@ def _channels_to_plotly(arr, channels=None):
             pad=dict(r=4, t=4),
         )],
     )
-    fig.update_xaxes(showticklabels=False, constrain='domain')
-    fig.update_yaxes(showticklabels=False, scaleanchor='x', constrain='domain',
-                     autorange='reversed')
+    fig.update_xaxes(showticklabels=False, showgrid=False, constrain='domain')
+    fig.update_yaxes(showticklabels=False, showgrid=False, scaleanchor='x',
+                     constrain='domain', autorange='reversed')
     return fig
 
 
