@@ -100,8 +100,11 @@ class ABRIO(CFTSDataTypeDescription):
     def load_waveforms(self):
         from bokeh.plotting import figure
         from bokeh.embed import components
-        from bokeh.models import ColumnDataSource, CustomJS, Select, LabelSet
-        from bokeh.layouts import column as bk_column
+        from bokeh.models import (
+            ColumnDataSource, CustomJS, Select, LabelSet, Slider,
+            WheelZoomTool, PanTool, BoxZoomTool, ResetTool, SaveTool,
+        )
+        from bokeh.layouts import column as bk_column, row as bk_row
         from bokeh.resources import CDN
 
         filename = self.path / f'{self.path.name} ABR average waveforms.csv'
@@ -109,69 +112,95 @@ class ABRIO(CFTSDataTypeDescription):
         grouping = list(df.groupby('frequency'))
 
         first_t = grouping[0][1].columns.values
-        t_span = float(first_t[-1] - first_t[0])
 
+        # x-only zoom/pan: the amplitude slider changes vertical scale, not
+        # the axes. This matches the matplotlib transform-based waterfall in
+        # github.com/bburan/abr where zoom rescales amplitude, not position.
         p = figure(
             height=500, sizing_mode='stretch_width',
-            x_range=(first_t[0] - t_span * 0.12, first_t[-1]),
-            tools='pan,wheel_zoom,box_zoom,reset,save',
+            x_range=(float(first_t[0]), float(first_t[-1])),
+            y_range=(0.0, 1.0),
+            tools='',
             toolbar_location='above',
+            min_border_left=55,
         )
+        p.add_tools(WheelZoomTool(dimensions='width'))
+        p.add_tools(PanTool(dimensions='width'))
+        p.add_tools(BoxZoomTool(dimensions='width'))
+        p.add_tools(ResetTool())
+        p.add_tools(SaveTool())
         p.xaxis.axis_label = 'Time (ms)'
         p.yaxis.visible = False
         p.ygrid.grid_line_color = None
 
-        all_line_renderers = []
         all_label_renderers = []
         all_seg_renderers = []
+        all_seg_sources = []
         freq_options = []
-        freq_idx = 0
 
+        # Per-frequency data passed to the amplitude-slider CustomJS
+        freq_sources = []
+        freq_offsets_list = []
+        freq_offset_steps = []
+        freq_n_list = []
+        flat_renderers = []
+        renderer_freq_idx = []
+
+        freq_idx = 0
         for freq, df_freq in grouping:
             levels = df_freq.index.get_level_values('level')
             t = df_freq.columns.values
             w_vals = df_freq.values
-            n = len(w_vals)
-            offset_step = 1.0 / (n + 1)
+            offset_step = 1.0 / (len(w_vals) + 1)
 
-            valid_w = [w for w in w_vals if not np.isnan(w).all()]
-            if not valid_w:
+            valid_pairs = [(lv, w) for lv, w in zip(levels, w_vals)
+                           if not np.isnan(w).all()]
+            if not valid_pairs:
                 continue
 
             is_first = (freq_idx == 0)
             freq_options.append(f'{freq} Hz')
 
-            limits = [(w.min(), w.max()) for w in valid_w]
-            base_scale = np.mean(np.abs(np.array(limits))) or 1.0
+            base_scale = np.mean(
+                np.abs(np.array([(w.min(), w.max()) for _, w in valid_pairs]))
+            ) or 1.0
 
-            line_renderers = []
+            # One ColumnDataSource per frequency holds all waveforms.
+            # wn_k  — normalised amplitude (w / base_scale), never changes.
+            # y_k   — current display y, recomputed by the amplitude slider.
+            # Initial render at scale=1: y = ((wn*1 + 1) / 2) * os + offset
+            src_data = {'x': t.tolist()}
+            offsets = []
             lbl_x, lbl_y, lbl_text = [], [], []
             max_y = 0.0
 
-            for j, (level, w) in enumerate(zip(levels, w_vals)):
-                if np.isnan(w).all():
-                    continue
-                offset = offset_step * j + offset_step * 0.5
-                w_norm = w / base_scale
-                w_scaled = ((w_norm + 1) / 2) * offset_step
-                w_final = w_scaled + offset
-
-                src = ColumnDataSource({'x': t.tolist(), 'y': w_final.tolist()})
-                r = p.line('x', 'y', source=src, line_color='black',
-                           line_width=1, visible=is_first)
-                line_renderers.append(r)
-
+            for k, (level, w) in enumerate(valid_pairs):
+                offset = offset_step * k + offset_step * 0.5
+                offsets.append(offset)
+                wn = w / base_scale
+                y = ((wn + 1.0) / 2.0) * offset_step + offset
+                src_data[f'wn{k}'] = wn.tolist()
+                src_data[f'y{k}'] = y.tolist()
                 lbl_x.append(float(t[0]))
-                lbl_y.append(offset + offset_step / 2)
+                lbl_y.append(offset)
                 lbl_text.append(str(int(level)))
-                max_y = max(max_y, float(w_final.max()))
+                max_y = max(max_y, float(y.max()))
 
-            # Scale bar: represents 1 µV, placed above topmost waveform.
-            scale_height = (1.0 / base_scale) * (offset_step / 2)
-            bar_y0 = max_y + offset_step * 0.15
+            n_valid = len(valid_pairs)
+            src = ColumnDataSource(src_data)
+
+            for k in range(n_valid):
+                r = p.line('x', f'y{k}', source=src, line_color='black',
+                           line_width=1, visible=is_first)
+                flat_renderers.append(r)
+                renderer_freq_idx.append(freq_idx)
+
+            # Scale bar: height = offset_step/2 at scale=1 (represents
+            # base_scale µV). Grows/shrinks with the amplitude slider.
+            bar_y0 = min(max_y + offset_step * 0.2, 0.97)
             seg_src = ColumnDataSource({
                 'x0': [float(t[-1])], 'y0': [bar_y0],
-                'x1': [float(t[-1])], 'y1': [bar_y0 + scale_height],
+                'x1': [float(t[-1])], 'y1': [bar_y0 + offset_step / 2],
             })
             seg_r = p.segment('x0', 'y0', 'x1', 'y1', source=seg_src,
                               line_color='red', line_width=2, visible=is_first)
@@ -184,39 +213,73 @@ class ABRIO(CFTSDataTypeDescription):
             )
             p.add_layout(lbl_r)
 
-            all_line_renderers.append(line_renderers)
+            freq_sources.append(src)
+            freq_offsets_list.append(offsets)
+            freq_offset_steps.append(offset_step)
+            freq_n_list.append(n_valid)
             all_label_renderers.append(lbl_r)
             all_seg_renderers.append(seg_r)
+            all_seg_sources.append(seg_src)
             freq_idx += 1
 
-        flat_renderers = []
-        renderer_freq_idx = []
-        for fi, rlist in enumerate(all_line_renderers):
-            for r in rlist:
-                flat_renderers.append(r)
-                renderer_freq_idx.append(fi)
+        select = Select(title='Frequency', value=freq_options[0],
+                        options=freq_options, width=180)
+        amp_slider = Slider(start=0.1, end=10.0, value=1.0, step=0.1,
+                            title='Amplitude scale', width=280)
 
-        select = Select(
-            title='Frequency', value=freq_options[0],
-            options=freq_options, width=200,
-        )
+        # Recompute display y-values and scale bar for the current frequency
+        # and amplitude scale.  y = ((wn * scale + 1) / 2) * os + offset.
+        # Larger scale → taller traces; scroll-zoom on x-axis only.
+        recompute_js = """
+const fi = freq_options.indexOf(select.value);
+const scale = amp_slider.value;
+const src = freq_sources[fi];
+const n = freq_n[fi];
+const os = freq_os[fi];
+const offs = freq_offsets[fi];
+const nd = Object.assign({}, src.data);
+for (let k = 0; k < n; k++) {
+    const wn = src.data['wn' + k];
+    const off = offs[k];
+    nd['y' + k] = wn.map(v => ((v * scale + 1) / 2) * os + off);
+}
+src.data = nd;
+const ss = seg_sources[fi];
+const sd = Object.assign({}, ss.data);
+sd['y1'] = [sd['y0'][0] + scale * os / 2];
+ss.data = sd;
+"""
+        cb_args = {
+            'freq_sources': freq_sources,
+            'freq_offsets': freq_offsets_list,
+            'freq_os': freq_offset_steps,
+            'freq_n': freq_n_list,
+            'seg_sources': all_seg_sources,
+            'select': select,
+            'freq_options': freq_options,
+            'amp_slider': amp_slider,
+        }
+
+        amp_slider.js_on_change('value', CustomJS(args=cb_args, code=recompute_js))
+
         select.js_on_change('value', CustomJS(
             args={
+                **cb_args,
                 'flat_renderers': flat_renderers,
                 'renderer_freq_idx': renderer_freq_idx,
                 'label_renderers': all_label_renderers,
                 'seg_renderers': all_seg_renderers,
-                'freq_options': freq_options,
             },
             code="""
 const fi = freq_options.indexOf(cb_obj.value);
 flat_renderers.forEach((r, i) => { r.visible = (renderer_freq_idx[i] === fi); });
 label_renderers.forEach((r, i) => { r.visible = (i === fi); });
 seg_renderers.forEach((r, i) => { r.visible = (i === fi); });
-""",
+""" + recompute_js,
         ))
 
-        layout = bk_column(select, p, sizing_mode='stretch_width')
+        layout = bk_column(bk_row(select, amp_slider), p,
+                           sizing_mode='stretch_width')
         script, div = components(layout)
         return {
             'type': 'bokeh',
