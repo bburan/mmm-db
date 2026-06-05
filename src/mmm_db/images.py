@@ -222,27 +222,10 @@ class CZIDataTypeDescription(DataTypeDescription):
             return [self.path]
         return []
 
-    @plot_callback('Confocal (zoomable)')
+    @plot_callback('Image')
     def load_image_plotly(self):
-        """Load the CZI and return a zoomable Plotly max-projection.
-
-        Returns
-        -------
-        plotly.graph_objects.Figure
-        """
-        _, arr = _load_czi_xy_proj(self.path)
-        return array_to_plotly(arr)
-
-    @image_callback('Confocal (JPEG)')
-    def load_image(self):
-        """Load the CZI and return a JPEG BytesIO of the max-projection.
-
-        Returns
-        -------
-        io.BytesIO
-        """
-        _, arr = _load_czi_xy_proj(self.path)
-        return array_to_image(arr)
+        info, arr = _load_czi_xy_proj(self.path)
+        return _synaptogram_to_bokeh(arr, info.get('channels', []), scatter_data=[])
 
     def parse(self):
         """Parse the image filename for metadata.
@@ -287,40 +270,202 @@ _NAPARI_COLORMAP_TO_HEX = {
 }
 
 
-def _add_synapse_toggle(fig, n_channel_traces, n_point_traces):
-    """Append a Synapses on/off button group to *fig* (in-place)."""
-    if not n_point_traces:
-        return
-    indices = list(range(n_channel_traces, n_channel_traces + n_point_traces))
-    fig.update_layout(updatemenus=list(fig.layout.updatemenus) + [dict(
-        type='buttons',
-        buttons=[
-            dict(label='Synapses on', method='restyle',
-                 args=[{'visible': True}, indices]),
-            dict(label='Synapses off', method='restyle',
-                 args=[{'visible': False}, indices]),
-        ],
-        active=0,
-        x=1.0, y=1.0,
-        xanchor='right', yanchor='bottom',
-        showactive=True,
-        bgcolor='rgba(60,60,60,0.9)',
-        bordercolor='rgba(180,180,180,0.4)',
-        font=dict(color='white', size=11),
-        pad=dict(r=4, t=4),
-    )])
+def _array_to_bokeh_rgba(arr, channels=None, percentiles=(0.1, 99.9)):
+    """Composite (X, Y, n_ch) into (Y, X) uint32 RGBA for Bokeh image_rgba.
+
+    Each channel is additively blended using its display color after
+    per-channel contrast stretching between the given percentiles.
+    """
+    img = np.transpose(arr, (1, 0, 2)).astype(np.float32)
+    H, W, n_c = img.shape
+    lo_p, hi_p = percentiles
+
+    composite = np.zeros((H, W, 3), dtype=np.float64)
+    for c in range(n_c):
+        ch_info = (channels[c] if channels and c < len(channels) else {})
+        color = (
+            _parse_channel_color(ch_info.get('display_color', ''))
+            or _CHANNEL_DEFAULT_COLORS[c % len(_CHANNEL_DEFAULT_COLORS)]
+        )
+        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+        ch = img[..., c]
+        lo, hi = np.percentile(ch, [lo_p, hi_p])
+        scaled = np.clip((ch - lo) / (hi - lo), 0, 1) if hi > lo else np.zeros_like(ch)
+        composite[..., 0] += scaled * r
+        composite[..., 1] += scaled * g
+        composite[..., 2] += scaled * b
+
+    composite = np.clip(composite, 0, 255).astype(np.uint8)
+    rgba = np.zeros((H, W, 4), dtype=np.uint8)
+    rgba[..., :3] = composite
+    rgba[..., 3] = 255
+    # Little-endian uint32: R in low byte, A in high byte — matches Bokeh's
+    # expected pixel layout (R=bits 0-7, G=8-15, B=16-23, A=24-31).
+    return np.ascontiguousarray(rgba.view(np.uint32).reshape(H, W))
 
 
-def _scatter_synapses(fig, name, xi, yi):
-    """Add a synapse scatter trace to *fig* (in-place)."""
-    import plotly.graph_objects as go
-    fig.add_trace(go.Scatter(
-        x=xi, y=yi,
-        mode='markers',
-        name=name,
-        marker=dict(size=8, color='white', symbol='circle-open',
-                    line=dict(width=2)),
-    ))
+def _synaptogram_to_bokeh(xy_proj, channels, scatter_data, overlay_fn=None):
+    """Return a Bokeh synaptogram as a JSON-serialisable dict.
+
+    Each channel is stored as a raw uint8 array in the ColumnDataSource so
+    that per-channel visibility toggles and min/max RangeSliders can
+    recomposite the image entirely client-side via CustomJS.
+
+    Parameters
+    ----------
+    xy_proj : ndarray, shape (X, Y, n_ch)
+    channels : list of dicts with 'name' and 'display_color'
+    scatter_data : list of (name, xi, yi) — pixel-space coordinates
+    """
+    from bokeh.plotting import figure
+    from bokeh.embed import components
+    from bokeh.models import ColumnDataSource, CustomJS, Toggle, RangeSlider
+    from bokeh.layouts import column as bk_column, row as bk_row
+    from bokeh.resources import CDN
+
+    img = np.transpose(xy_proj, (1, 0, 2)).astype(np.float32)
+    H, W, n_c = img.shape
+
+    # Per-channel: normalise to uint8 and record display colour.
+    ch_raws = []
+    ch_colors = []
+    ch_names = []
+    for c in range(n_c):
+        ch_info = (channels[c] if channels and c < len(channels) else {})
+        ch_names.append(ch_info.get('name') or f'Channel {c + 1}')
+        color = (
+            _parse_channel_color(ch_info.get('display_color', ''))
+            or _CHANNEL_DEFAULT_COLORS[c % len(_CHANNEL_DEFAULT_COLORS)]
+        )
+        r_c, g_c, b_c = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+        ch_colors.append([r_c, g_c, b_c])
+        ch = img[..., c]
+        lo, hi = np.percentile(ch, [0.1, 99.9])
+        scaled = np.clip((ch - lo) / (hi - lo), 0, 1) if hi > lo else np.zeros_like(ch)
+        ch_raws.append((scaled * 255).astype(np.uint8).flatten())
+
+    # Build initial composite RGBA (H, W) uint32.
+    composite = np.zeros((H, W, 3), dtype=np.float64)
+    for raw, (r_c, g_c, b_c) in zip(ch_raws, ch_colors):
+        f = raw.reshape(H, W).astype(np.float64) / 255.0
+        composite[..., 0] += f * r_c
+        composite[..., 1] += f * g_c
+        composite[..., 2] += f * b_c
+    composite = np.clip(composite, 0, 255).astype(np.uint8)
+    rgba = np.zeros((H, W, 4), dtype=np.uint8)
+    rgba[..., :3] = composite
+    rgba[..., 3] = 255
+    composite_rgba = np.ascontiguousarray(rgba.view(np.uint32).reshape(H, W))
+
+    # Two separate ColumnDataSources avoid the "inconsistent lengths" warning:
+    #   img_source  — one column 'image' with a single 2D uint32 array (length 1)
+    #   ch_source   — one column per channel, each a flat uint8 array (length H*W)
+    img_source = ColumnDataSource({'image': [composite_rgba]})
+    ch_source = ColumnDataSource({f'ch{c}': raw for c, raw in enumerate(ch_raws)})
+
+    # y_range=(H, 0) reverses the y-axis so y=0 is at the top, matching
+    # image convention without needing to flip the array.
+    # sizing_mode='stretch_both' lets the figure fill whatever container the
+    # browser gives it; the container's aspect-ratio CSS property (set in JS)
+    # is what enforces square pixels — pure CSS, works on every resize.
+    p = figure(
+        sizing_mode='stretch_both',
+        x_range=(0, W),
+        y_range=(H, 0),
+        tools='pan,wheel_zoom,box_zoom,reset,save',
+        toolbar_location='above',
+        background_fill_color='black',
+        border_fill_color='black',
+    )
+    p.grid.visible = False
+    p.axis.visible = False
+    p.image_rgba(image='image', source=img_source, x=0, y=0, dw=W, dh=H)
+
+    if overlay_fn is not None:
+        overlay_fn(p)
+
+    # Per-channel controls: Toggle (on/off) + RangeSlider (black/white point).
+    toggles = [Toggle(label=name, active=True, button_type='light', width=150)
+               for name in ch_names]
+    sliders = [RangeSlider(start=0, end=255, value=(0, 255), step=1,
+                           title=name, width=280)
+               for name in ch_names]
+
+    # CustomJS: recomposite all channels whenever any toggle or slider changes.
+    # img_source.data['image'] is a 1-element JS array containing a Bokeh NDArray.
+    # We reach the underlying ArrayBuffer via ndarray.buffer and create a mutable
+    # Uint32Array view so we can write pixels in-place without touching the NDArray
+    # object that Bokeh validates on every change.emit().
+    recomposite_code = f"""
+const H = {H}, W = {W}, n_c = {n_c};
+const colors = {json.dumps(ch_colors)};
+const flat_img = new Uint32Array(img_source.data['image'][0].buffer);
+for (let i = 0; i < H * W; i++) {{
+    let rr = 0, gg = 0, bb = 0;
+    for (let c = 0; c < n_c; c++) {{
+        if (!toggles[c].active) continue;
+        const [lo, hi] = sliders[c].value;
+        const v = ch_source.data['ch' + c][i];
+        const s = (hi > lo) ? Math.max(0, Math.min(1, (v - lo) / (hi - lo))) : 0;
+        rr += colors[c][0] * s;
+        gg += colors[c][1] * s;
+        bb += colors[c][2] * s;
+    }}
+    const r = Math.min(255, Math.round(rr));
+    const g = Math.min(255, Math.round(gg));
+    const b = Math.min(255, Math.round(bb));
+    const a = (r | g | b) ? 255 : 0;
+    flat_img[i] = ((a << 24) | (b << 16) | (g << 8) | r) >>> 0;
+}}
+img_source.change.emit();
+"""
+    recomposite_cb = CustomJS(
+        args={'img_source': img_source, 'ch_source': ch_source,
+              'toggles': toggles, 'sliders': sliders},
+        code=recomposite_code,
+    )
+    for t in toggles:
+        t.js_on_change('active', recomposite_cb)
+    for s in sliders:
+        s.js_on_change('value', recomposite_cb)
+
+    _SCATTER_STYLES = {
+        'IHCs': dict(size=8, fill_color='#0dcaf0', line_color='#0dcaf0', line_width=1),
+    }
+    _SCATTER_DEFAULT = dict(size=10, fill_color=None, line_color='white', line_width=2.5)
+
+    # Scatter layers — one renderer + one toggle per named layer.
+    ch_rows = [bk_row(t, s) for t, s in zip(toggles, sliders)]
+    for name, xi, yi in scatter_data:
+        pt_src = ColumnDataSource({
+            'x': np.asarray(xi, dtype=float).tolist(),
+            'y': np.asarray(yi, dtype=float).tolist(),
+        })
+        style = _SCATTER_STYLES.get(name, _SCATTER_DEFAULT)
+        r = p.scatter('x', 'y', source=pt_src, **style)
+        tog = Toggle(label=name, active=True, button_type='light', width=200)
+        tog.js_on_change('active', CustomJS(
+            args={'renderer': r},
+            code='renderer.visible = cb_obj.active;',
+        ))
+        ch_rows.append(tog)
+
+    # Render figure and controls as two separate divs sharing one document so
+    # that CustomJS cross-references (img_source, toggles, etc.) still work.
+    # The JS side wraps figure_div in a CSS aspect-ratio container and appends
+    # controls_div below it, giving pure-CSS square-pixel enforcement on resize.
+    controls = bk_column(*ch_rows, sizing_mode='stretch_width')
+    script, (fig_div, ctrl_div) = components([p, controls])
+    return {
+        'type': 'bokeh',
+        'script': script,
+        'figure_div': fig_div,
+        'controls_div': ctrl_div,
+        'image_width': W,
+        'image_height': H,
+        'js_urls': list(CDN.js_files),
+        'css_urls': list(CDN.css_files),
+    }
 
 
 class SynaptogramAnalysis(DataTypeDescription):
@@ -342,6 +487,12 @@ class SynaptogramAnalysis(DataTypeDescription):
 
     @plot_callback('Synaptogram')
     def load_synaptogram_plot(self):
+        if self.path.suffix == '.syn':
+            return self._load_syn_plot()
+        if self.path.suffix == '.ims':
+            return self._load_ims_plot()
+
+    def _load_syn_plot(self):
         import pandas as pd
         import tifffile
         from io import StringIO
@@ -367,19 +518,14 @@ class SynaptogramAnalysis(DataTypeDescription):
             for i in indices
         ]
 
-        fig = _channels_to_plotly(xy_proj, channels)
-
-        n_point_traces = 0
+        scatter_data = []
         for layer_name, points_md in metadata.get('points', {}).items():
             df = pd.read_csv(StringIO(points_md['data']))
-            _scatter_synapses(fig, layer_name, df['x'], df['y'])
-            n_point_traces += 1
+            scatter_data.append((layer_name, df['x'].values, df['y'].values))
 
-        _add_synapse_toggle(fig, len(channels), n_point_traces)
-        return fig
+        return _synaptogram_to_bokeh(xy_proj, channels, scatter_data)
 
-    @plot_callback('Synaptogram (IMS)')
-    def load_ims_plot(self):
+    def _load_ims_plot(self):
         import h5py
 
         def _str(attrs, key):
@@ -444,13 +590,10 @@ class SynaptogramAnalysis(DataTypeDescription):
                 points_by_marker[marker] = (xi, yi)
 
         xy_proj = data.max(axis=2)                      # (x, y, n_ch)
-        fig = _channels_to_plotly(xy_proj, channels)
-
-        for marker, (xi, yi) in points_by_marker.items():
-            _scatter_synapses(fig, marker, xi, yi)
-
-        _add_synapse_toggle(fig, len(channels), len(points_by_marker))
-        return fig
+        scatter_data = [
+            (marker, xi, yi) for marker, (xi, yi) in points_by_marker.items()
+        ]
+        return _synaptogram_to_bokeh(xy_proj, channels, scatter_data)
 
 
 class IHCOHCCount(CZIDataTypeDescription):
@@ -476,85 +619,6 @@ def _parse_channel_color(display_color):
 _CHANNEL_DEFAULT_COLORS = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff']
 
 
-def _channels_to_plotly(arr, channels=None):
-    """Convert an (X, Y, C) uint8 array to a Plotly figure with one toggleable
-    heatmap trace per channel.
-
-    Each channel uses a transparent-to-color colorscale so that low-intensity
-    regions are see-through and the black background shows through.  Traces
-    are named from the CZI metadata when available and can be toggled via the
-    Plotly legend.
-    """
-    import plotly.graph_objects as go
-
-    img = np.transpose(arr, (1, 0, 2)).astype(np.float32)
-    n_c = img.shape[2]
-    fig = go.Figure()
-
-    lo_p, hi_p = 0.1, 99.9
-    for c in range(n_c):
-        ch_info = channels[c] if channels and c < len(channels) else {}
-        name = ch_info.get('name') or f'Channel {c + 1}'
-        color = (_parse_channel_color(ch_info.get('display_color', ''))
-                 or _CHANNEL_DEFAULT_COLORS[c % len(_CHANNEL_DEFAULT_COLORS)])
-        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
-
-        ch = img[:, :, c]
-        lo, hi = np.percentile(ch, [lo_p, hi_p])
-        scaled = (ch - lo) / (hi - lo) if hi > lo else np.zeros_like(ch)
-        z = np.clip(scaled, 0, 1)
-
-        fig.add_trace(go.Heatmap(
-            z=z,
-            colorscale=[[0, f'rgba({r},{g},{b},0)'], [1, f'rgba({r},{g},{b},1)']],
-            zmin=0, zmax=1,
-            showscale=False,
-            name=name,
-        ))
-
-    trace_indices = list(range(n_c))
-    buttons = [dict(
-        label='All',
-        method='restyle',
-        args=[{'visible': [True] * n_c}, trace_indices],
-    )]
-    for i in range(n_c):
-        ch_info_i = channels[i] if channels and i < len(channels) else {}
-        label = ch_info_i.get('name') or f'Channel {i + 1}'
-        buttons.append(dict(
-            label=label,
-            method='restyle',
-            args=[{'visible': [j == i for j in range(n_c)]}, trace_indices],
-        ))
-
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=36, b=0),
-        dragmode='zoom',
-        paper_bgcolor='black',
-        plot_bgcolor='black',
-        showlegend=False,
-        updatemenus=[dict(
-            type='buttons',
-            direction='right',
-            buttons=buttons,
-            active=0,
-            x=0.0,
-            y=1.0,
-            xanchor='left',
-            yanchor='bottom',
-            showactive=True,
-            bgcolor='rgba(60,60,60,0.9)',
-            bordercolor='rgba(180,180,180,0.4)',
-            font=dict(color='white', size=11),
-            pad=dict(r=4, t=4),
-        )],
-    )
-    fig.update_xaxes(showticklabels=False, showgrid=False, constrain='domain')
-    fig.update_yaxes(showticklabels=False, showgrid=False, scaleanchor='x',
-                     constrain='domain', autorange='reversed')
-    return fig
-
-
 _CELL_COLORS = {
     'IHC': '#0dcaf0',
     'OHC1': '#198754',
@@ -562,6 +626,35 @@ _CELL_COLORS = {
     'OHC3': '#fd7e14',
     'Extra': '#6f42c1',
 }
+
+
+def _add_bokeh_overlays(p, info, data):
+    """Overlay spline paths and cell markers onto Bokeh figure *p* (in-place)."""
+    from cochleogram.model import Points
+
+    vx, vy = info['voxel_size'][0], info['voxel_size'][1]
+    lx, ly = info['lower'][0], info['lower'][1]
+
+    def to_px(xs, ys):
+        return [(x - lx) / vx for x in xs], [(y - ly) / vy for y in ys]
+
+    for cell_type, color in _CELL_COLORS.items():
+        spiral_state = data.get('spirals', {}).get(cell_type, {})
+        if spiral_state.get('x'):
+            pt = Points(x=spiral_state['x'], y=spiral_state['y'],
+                        origin=spiral_state.get('origin', 0))
+            xi, yi = pt.interpolate()
+            if len(xi):
+                px_x, px_y = to_px(xi, yi)
+                p.line(x=px_x, y=px_y, line_color=color, line_width=1.5)
+
+    for cell_type, color in _CELL_COLORS.items():
+        cells = data.get('cells', {}).get(cell_type, {})
+        xc, yc = cells.get('x', []), cells.get('y', [])
+        if xc:
+            px_x, px_y = to_px(xc, yc)
+            p.scatter(x=px_x, y=px_y, fill_color=color, size=8,
+                      line_color='white', line_width=0.5)
 
 
 class IHCOHCCountAnalysis(DataTypeDescription):
@@ -637,13 +730,15 @@ class IHCOHCCountAnalysis(DataTypeDescription):
     @plot_callback('IHC and OHC counts')
     def load_count_plot(self):
         info, arr, data = self._load_base()
-        fig = array_to_plotly(arr)
-        self._add_overlays(fig, info, data)
-        return fig
+        return _synaptogram_to_bokeh(
+            arr, info.get('channels', []), scatter_data=[],
+            overlay_fn=lambda p: _add_bokeh_overlays(p, info, data),
+        )
 
     @plot_callback('IHC and OHC counts (channels)')
     def load_count_plot_channels(self):
         info, arr, data = self._load_base()
-        fig = _channels_to_plotly(arr, info.get('channels'))
-        self._add_overlays(fig, info, data)
-        return fig
+        return _synaptogram_to_bokeh(
+            arr, info.get('channels', []), scatter_data=[],
+            overlay_fn=lambda p: _add_bokeh_overlays(p, info, data),
+        )

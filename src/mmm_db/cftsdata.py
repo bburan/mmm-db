@@ -98,78 +98,133 @@ class ABRIO(CFTSDataTypeDescription):
 
     @plot_callback('Waveforms')
     def load_waveforms(self):
-        """Build an interactive Plotly waterfall of ABR waveforms.
+        from bokeh.plotting import figure
+        from bokeh.embed import components
+        from bokeh.models import ColumnDataSource, CustomJS, Select, LabelSet
+        from bokeh.layouts import column as bk_column
+        from bokeh.resources import CDN
 
-        Returns
-        -------
-        plotly.graph_objects.Figure
-        """
         filename = self.path / f'{self.path.name} ABR average waveforms.csv'
         df = load_abr_waveforms(filename)
-
-        fig = go.Figure()
-        buttons = []
-
         grouping = list(df.groupby('frequency'))
 
-        all_annots = []
-        all_shapes = []
-        freq_trace_indices = []
-        total_traces = 0
+        first_t = grouping[0][1].columns.values
+        t_span = float(first_t[-1] - first_t[0])
 
-        for i, (frequency, df_freq) in enumerate(grouping):
-            is_first = (i == 0)
-            traces, annots, shapes = plotly_waterfall(df_freq, is_visible=is_first)
-
-            indices = list(range(total_traces, total_traces + len(traces)))
-            freq_trace_indices.append(indices)
-            total_traces += len(traces)
-
-            for t in traces:
-                fig.add_trace(t)
-
-            all_annots.append(annots)
-            all_shapes.append(shapes)
-
-            if is_first:
-                fig.update_layout(annotations=annots, shapes=shapes)
-
-        for i, (frequency, _) in enumerate(grouping):
-            visible = [False] * total_traces
-            for idx in freq_trace_indices[i]:
-                visible[idx] = True
-
-            buttons.append(dict(
-                label=f"{frequency} Hz",
-                method="update",
-                args=[
-                    {"visible": visible},
-                    {
-                        "annotations": all_annots[i],
-                        "shapes": all_shapes[i],
-                    }
-                ]
-            ))
-
-        fig.update_layout(
-            template="plotly_white",
-            showlegend=False,
-            margin=dict(l=120, r=40, t=20, b=40),
-            yaxis=dict(fixedrange=True, showticklabels=False, zeroline=False, showgrid=False),
-            xaxis=dict(fixedrange=True, title="Time", showgrid=True, zeroline=False),
-            updatemenus=[dict(
-                active=0,
-                buttons=buttons,
-                x=0.0,
-                y=1.15,
-                xanchor="left",
-                yanchor="top",
-                direction="down",
-                showactive=True,
-            )]
+        p = figure(
+            height=500, sizing_mode='stretch_width',
+            x_range=(first_t[0] - t_span * 0.12, first_t[-1]),
+            tools='pan,wheel_zoom,box_zoom,reset,save',
+            toolbar_location='above',
         )
+        p.xaxis.axis_label = 'Time (ms)'
+        p.yaxis.visible = False
+        p.ygrid.grid_line_color = None
 
-        return fig
+        all_line_renderers = []
+        all_label_renderers = []
+        all_seg_renderers = []
+        freq_options = []
+        freq_idx = 0
+
+        for freq, df_freq in grouping:
+            levels = df_freq.index.get_level_values('level')
+            t = df_freq.columns.values
+            w_vals = df_freq.values
+            n = len(w_vals)
+            offset_step = 1.0 / (n + 1)
+
+            valid_w = [w for w in w_vals if not np.isnan(w).all()]
+            if not valid_w:
+                continue
+
+            is_first = (freq_idx == 0)
+            freq_options.append(f'{freq} Hz')
+
+            limits = [(w.min(), w.max()) for w in valid_w]
+            base_scale = np.mean(np.abs(np.array(limits))) or 1.0
+
+            line_renderers = []
+            lbl_x, lbl_y, lbl_text = [], [], []
+            max_y = 0.0
+
+            for j, (level, w) in enumerate(zip(levels, w_vals)):
+                if np.isnan(w).all():
+                    continue
+                offset = offset_step * j + offset_step * 0.5
+                w_norm = w / base_scale
+                w_scaled = ((w_norm + 1) / 2) * offset_step
+                w_final = w_scaled + offset
+
+                src = ColumnDataSource({'x': t.tolist(), 'y': w_final.tolist()})
+                r = p.line('x', 'y', source=src, line_color='black',
+                           line_width=1, visible=is_first)
+                line_renderers.append(r)
+
+                lbl_x.append(float(t[0]))
+                lbl_y.append(offset + offset_step / 2)
+                lbl_text.append(str(int(level)))
+                max_y = max(max_y, float(w_final.max()))
+
+            # Scale bar: represents 1 µV, placed above topmost waveform.
+            scale_height = (1.0 / base_scale) * (offset_step / 2)
+            bar_y0 = max_y + offset_step * 0.15
+            seg_src = ColumnDataSource({
+                'x0': [float(t[-1])], 'y0': [bar_y0],
+                'x1': [float(t[-1])], 'y1': [bar_y0 + scale_height],
+            })
+            seg_r = p.segment('x0', 'y0', 'x1', 'y1', source=seg_src,
+                              line_color='red', line_width=2, visible=is_first)
+
+            lbl_src = ColumnDataSource({'x': lbl_x, 'y': lbl_y, 'text': lbl_text})
+            lbl_r = LabelSet(
+                x='x', y='y', text='text', source=lbl_src,
+                x_offset=-5, text_align='right', text_baseline='middle',
+                visible=is_first, text_font_size='11px',
+            )
+            p.add_layout(lbl_r)
+
+            all_line_renderers.append(line_renderers)
+            all_label_renderers.append(lbl_r)
+            all_seg_renderers.append(seg_r)
+            freq_idx += 1
+
+        flat_renderers = []
+        renderer_freq_idx = []
+        for fi, rlist in enumerate(all_line_renderers):
+            for r in rlist:
+                flat_renderers.append(r)
+                renderer_freq_idx.append(fi)
+
+        select = Select(
+            title='Frequency', value=freq_options[0],
+            options=freq_options, width=200,
+        )
+        select.js_on_change('value', CustomJS(
+            args={
+                'flat_renderers': flat_renderers,
+                'renderer_freq_idx': renderer_freq_idx,
+                'label_renderers': all_label_renderers,
+                'seg_renderers': all_seg_renderers,
+                'freq_options': freq_options,
+            },
+            code="""
+const fi = freq_options.indexOf(cb_obj.value);
+flat_renderers.forEach((r, i) => { r.visible = (renderer_freq_idx[i] === fi); });
+label_renderers.forEach((r, i) => { r.visible = (i === fi); });
+seg_renderers.forEach((r, i) => { r.visible = (i === fi); });
+""",
+        ))
+
+        layout = bk_column(select, p, sizing_mode='stretch_width')
+        script, div = components(layout)
+        return {
+            'type': 'bokeh',
+            'script': script,
+            'div': div,
+            'js_urls': list(CDN.js_files),
+            'css_urls': list(CDN.css_files),
+        }
 
     @pdf_callback('Waveforms PDF')
     def get_waveforms_pdf(self):
