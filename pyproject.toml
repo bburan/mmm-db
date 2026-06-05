@@ -17,6 +17,7 @@ dependencies = [
     'abtsdata>=0.0.2',
     'plotly',
     'bokeh',
+    'h5py',
 ]
 dynamic = ["version"]
 
