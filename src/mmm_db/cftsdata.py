@@ -126,6 +126,42 @@ class CFTSDataTypeDescription(PSIDataTypeDescription):
 class ABRIO(CFTSDataTypeDescription):
 
     experiment = 'abr_io'
+    supports_rating = True
+
+    def get_rating_status(self):
+        picks = _load_all_analyzed(self.path)
+
+        try:
+            filename = self.path / f'{self.path.name} ABR average waveforms.csv'
+            df = load_abr_waveforms(filename)
+            all_freqs = set(df.index.get_level_values('frequency').unique())
+        except Exception:
+            return {'is_rated': False, 'note': 'Could not load waveforms'}
+
+        n_total = len(all_freqs)
+        if n_total == 0:
+            return {'is_rated': False, 'note': 'No frequencies found'}
+
+        if not picks:
+            return {'is_rated': False, 'note': f'0 of {n_total} frequencies rated'}
+
+        # A waveform frequency is considered rated when any rater has analyzed it.
+        rated_freqs = set()
+        for rater_picks in picks.values():
+            rated_freqs |= set(rater_picks.keys())
+
+        n_rated = sum(
+            1 for wf in all_freqs
+            if any(abs(rf - wf) < 10.0 for rf in rated_freqs)
+        )
+
+        if n_rated == n_total:
+            raters = ', '.join(sorted(picks.keys()))
+            return {'is_rated': True, 'note': f'Rated by {raters}'}
+        return {
+            'is_rated': False,
+            'note': f'{n_rated} of {n_total} frequencies rated',
+        }
 
     @plot_callback('Waveforms')
     def load_waveforms(self):

@@ -46,7 +46,7 @@ class AnimalPhoto(DataTypeDescription):
             ``note`` (str or None). Returns ``None`` for files that don't
             match the convention.
         """
-        if self.path.suffix.lower() != '.jpg':
+        if self.path.suffix.lower() not in ('.jpg', '.pdf'):
             return None
         match = P_ANIMAL_PHOTO.match(self.path.stem)
         if match is None:
