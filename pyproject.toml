@@ -15,6 +15,7 @@ dependencies = [
     'psidata>=0.1.13',
     'cftsdata[zarr]>=0.1.9',
     'abtsdata>=0.0.2',
+    'abr',
     'plotly',
     'bokeh',
     'h5py',

@@ -10,6 +10,7 @@ DESCRIPTION_CLASSES = {
     'CFTS: ABR IO': cftsdata.ABRIO,
     'CFTS: DPOAE IO': cftsdata.DPOAEIO,
     'CFTS: IEC': cftsdata.IEC,
+    'CFTS: Noise Exposure': cftsdata.NoiseExposure,
     'Histology: Synaptogram': images.Synaptogram,
     'Histology: Synaptogram (Analysis)': images.SynaptogramAnalysis,
     'Histology: IHC and OHC counts': images.IHCOHCCount,
