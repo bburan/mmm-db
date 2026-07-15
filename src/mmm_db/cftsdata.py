@@ -524,6 +524,16 @@ class IEC(CFTSDataTypeDescription):
         return self._get_pdf('calibration.pdf')
 
 
+class EFRRAM(CFTSDataTypeDescription):
+
+    experiment = 'efr_ram_epoch'
+
+
+class EFRSAM(CFTSDataTypeDescription):
+
+    experiment = 'efr_sam_epoch'
+
+
 class NoiseExposure(CFTSDataTypeDescription):
 
     experiment = 'noise_exposure'

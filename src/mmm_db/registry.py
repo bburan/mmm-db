@@ -9,6 +9,8 @@ DESCRIPTION_CLASSES = {
     'ABTS: Gap Detection GoNogo': abtsdata.GapDetectionGoNogo,
     'CFTS: ABR IO': cftsdata.ABRIO,
     'CFTS: DPOAE IO': cftsdata.DPOAEIO,
+    'CFTS: EFR (SAM)': cftsdata.EFRSAM,
+    'CFTS: EFR (RAM)': cftsdata.EFRRAM,
     'CFTS: IEC': cftsdata.IEC,
     'CFTS: Noise Exposure': cftsdata.NoiseExposure,
     'Histology: Synaptogram': images.Synaptogram,
