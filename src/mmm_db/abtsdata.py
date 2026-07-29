@@ -36,10 +36,16 @@ class ABTSDataTypeDescription(PSIDataTypeDescription):
         'np_duration',
         'psivideo_frames_written',
         'psivideo_frame_ts',
+        'stim_start',
+        'stim_complete',
+        'actual_level',
     ]
 
     def _parse(self, filename):
-        return parse_abts_filename(filename)
+        result = parse_abts_filename(filename)
+        if result['animal_id'] == 'test':
+            return None
+        return result
 
     @pdf_callback('Performance', 'fa-chart-line')
     def get_performance_pdf(self):
