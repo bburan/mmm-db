@@ -14,20 +14,27 @@ from colony_manager.datatypes import (
 from .psidata import PSIDataTypeDescription
 
 
+# Sentinel frequency used by cftsdata/abr (``abr.ABRStim.CLICK.value``) for
+# click-evoked ABR data in place of a tone frequency.
+CLICK_FREQ_HZ = -1.0
+
+
 def _load_all_analyzed(path):
     """Return ``{rater: {freq_hz: {'threshold': float|None, 'data': DataFrame}}}``
-    for all *-{freq}kHz-{rater}-analyzed.txt files found under ``path``.
-    Frequency is taken from the filename (more precise than the file header).
+    for all *-{freq}kHz-{rater}-analyzed.txt or *-click-{rater}-analyzed.txt
+    files found under ``path``. Frequency is taken from the filename (more
+    precise than the file header); click files map to ``CLICK_FREQ_HZ`` to
+    match the sentinel used elsewhere for click stimuli.
     """
     import re
     from abr.parsers import load_analysis
     result = {}
-    pat = re.compile(r'-([\d.]+)kHz-([^-]+)-analyzed\.txt$', re.IGNORECASE)
+    pat = re.compile(r'-(?:([\d.]+)kHz|click)-([^-]+)-analyzed\.txt$', re.IGNORECASE)
     for fname in sorted(path.glob('*-analyzed.txt')):
         m = pat.search(fname.name)
         if not m:
             continue
-        freq_hz = float(m.group(1)) * 1000
+        freq_hz = float(m.group(1)) * 1000 if m.group(1) else CLICK_FREQ_HZ
         rater = m.group(2)
         try:
             _, threshold, df = load_analysis(fname)
@@ -35,6 +42,13 @@ def _load_all_analyzed(path):
             continue
         result.setdefault(rater, {})[freq_hz] = {'threshold': threshold, 'data': df}
     return result
+
+
+def _format_freq_label(freq_hz):
+    """Format a frequency in Hz for display, special-casing the click sentinel."""
+    if freq_hz == CLICK_FREQ_HZ:
+        return 'click'
+    return f'{freq_hz / 1000:g} kHz'
 
 
 def _wave_colors():
@@ -252,7 +266,8 @@ class ABRIO(CFTSDataTypeDescription):
                 continue
 
             is_first = (freq_idx == 0)
-            freq_options.append(f'{freq} Hz')
+            freq_label = 'Click' if freq == CLICK_FREQ_HZ else f'{freq} Hz'
+            freq_options.append(freq_label)
 
             base_scale = np.mean(
                 np.abs(np.array([(w.min(), w.max()) for _, w in valid_pairs]))
@@ -496,10 +511,16 @@ flat_peak_renderers.forEach((r, i) => {
         for rater, rater_picks in sorted(picks.items()):
             for freq_hz, info in sorted(rater_picks.items()):
                 th = info['threshold']
-                result[f'{rater} — {freq_hz / 1000:g} kHz'] = (
+                result[f'{rater} — {_format_freq_label(freq_hz)}'] = (
                     f'{th:.1f} dB SPL' if th is not None else 'Not set'
                 )
         return result
+
+
+class ABRIOClick(ABRIO):
+    """Click-evoked ABR I/O; identical output layout to :class:`ABRIO`."""
+
+    experiment = 'abr_io_click'
 
 
 class DPOAEIO(CFTSDataTypeDescription):
@@ -513,6 +534,19 @@ class DPOAEIO(CFTSDataTypeDescription):
     @pdf_callback('Thresholds PDF')
     def get_th_pdf(self):
         return self._get_pdf('th.pdf')
+
+
+class DPGram(CFTSDataTypeDescription):
+
+    experiment = 'dpgram'
+
+    @pdf_callback('DPgram PDF')
+    def get_dpgram_pdf(self):
+        return self._get_pdf('dpgram.pdf')
+
+    @pdf_callback('Mic Spectrum PDF')
+    def get_mic_spectrum_pdf(self):
+        return self._get_pdf('mic spectrum.pdf')
 
 
 class IEC(CFTSDataTypeDescription):
@@ -554,4 +588,90 @@ class NoiseExposure(CFTSDataTypeDescription):
             'Expected spectrum level (dB SPL/Hz)': f'{info["expected_spectrum_level"]:.2f}',
             'Measured noise level (dB SPL)': f'{info["measured_noise_level"]:.2f}',
             'Measured noise band level (dB SPL)': f'{info["measured_noise_band_level"]:.2f}',
+        }
+
+
+class MEMR(CFTSDataTypeDescription):
+    """Common outputs shared by all three MEMR (middle-ear muscle reflex)
+    experiment types. See ``cftsdata.summarize_memr`` for how these files
+    are generated."""
+
+    experiment = None
+
+    @pdf_callback('MEMR PDF')
+    def get_memr_pdf(self):
+        return self._get_pdf('MEMR.pdf')
+
+    @pdf_callback('MEMR Total PDF')
+    def get_memr_total_pdf(self):
+        return self._get_pdf('MEMR_total.pdf')
+
+    @pdf_callback('Probe PDF')
+    def get_probe_pdf(self):
+        return self._get_pdf('probe.pdf')
+
+    @pdf_callback('Elicitor PDF')
+    def get_elicitor_pdf(self):
+        return self._get_pdf('elicitor.pdf')
+
+
+class MEMRInterleavedClick(MEMR):
+    """Adds the epoch-waveform and HT2-threshold outputs produced by the
+    interleaved-click paradigm (see ``cftsdata.summarize_memr_th``)."""
+
+    experiment = 'memr_interleaved_click'
+
+    @pdf_callback('Epoch Waveform PDF')
+    def get_epoch_waveform_pdf(self):
+        return self._get_pdf('epoch waveform.pdf')
+
+    @pdf_callback('HT2 Threshold Diagnostics PDF')
+    def get_ht2_threshold_diagnostics_pdf(self):
+        return self._get_pdf('HT2 threshold diagnostics.pdf')
+
+    @dict_callback('HT2 Threshold', 'fa-arrows-down-to-line')
+    def get_ht2_threshold(self):
+        import json
+        info = json.loads(self.get_file('HT2 threshold.json').read_text())
+        return {
+            'Mean threshold (dB SPL)': f'{info["mean_threshold"]:.1f}',
+            'Max threshold (dB SPL)': f'{info["max_threshold"]:.1f}',
+            'Mean asymptote (dB)': f'{info["mean_asymptote"]:.2f}',
+            'Max asymptote (dB)': f'{info["max_asymptote"]:.2f}',
+            'HT2 2-sample threshold (dB SPL)': f'{info["t2_2samp_threshold"]:.1f}',
+        }
+
+
+class MEMRSimultaneousChirp(MEMRInterleavedClick):
+    """Same output layout as :class:`MEMRInterleavedClick`."""
+
+    experiment = 'memr_simultaneous_chirp'
+
+
+class MEMRSweepClick(MEMR):
+
+    experiment = 'memr_sweep_click'
+
+    @pdf_callback('MEMR Block PDF')
+    def get_memr_block_pdf(self):
+        return self._get_pdf('MEMR_block.pdf')
+
+    @pdf_callback('Diagnostics PDF')
+    def get_diagnostics_pdf(self):
+        return self._get_pdf('diagnostics.pdf')
+
+    @pdf_callback('Threshold PDF')
+    def get_threshold_pdf(self):
+        return self._get_pdf('MEMR_threshold.pdf')
+
+    @dict_callback('Threshold Stats', 'fa-arrows-down-to-line')
+    def get_threshold_stats(self):
+        import json
+        info = json.loads(self.get_file('MEMR_threshold_stats.json').read_text())
+        return {
+            'Threshold (click #)': f'{info["threshold"]:.1f}',
+            'Center (click #)': f'{info["center"]:.1f}',
+            'Width (clicks)': f'{info["width"]:.1f}',
+            'Max amplitude (dB)': f'{info["amplitude_max"]:.2f}',
+            'Mean amplitude (dB)': f'{info["amplitude_mean"]:.2f}',
         }
