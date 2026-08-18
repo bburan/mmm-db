@@ -9,6 +9,8 @@ DESCRIPTION_CLASSES = {
     'ABTS: Gap Detection GoNogo': abtsdata.GapDetectionGoNogo,
     'CFTS: ABR IO': cftsdata.ABRIO,
     'CFTS: ABR IO (Click)': cftsdata.ABRIOClick,
+    'CFTS: MLR/LLR IO (freefield, tone)': cftsdata.MLRLLRIOFreeField,
+    'CFTS: MLR/LLR IO (freefield, click)': cftsdata.MLRLLRIOClickFreeField,
     'CFTS: DPOAE IO': cftsdata.DPOAEIO,
     'CFTS: DPgram': cftsdata.DPGram,
     'CFTS: EFR (SAM)': cftsdata.EFRSAM,
