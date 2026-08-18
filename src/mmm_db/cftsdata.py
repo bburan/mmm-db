@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 
 from cftsdata.dataset import parse_psi_filename
 from cftsdata.summarize_abr import load_abr_waveforms
+from cftsdata.summarize_mlr_llr import load_waveforms as load_mlr_llr_waveforms
 
 from colony_manager.datatypes import (
     plot_callback, pdf_callback, dict_callback,
@@ -138,6 +139,18 @@ class CFTSDataTypeDescription(PSIDataTypeDescription):
 
 
 class ERPIO(CFTSDataTypeDescription):
+    """Shared waveform viewer for evoked-response I/O experiments.
+
+    ``waveforms_csv_suffix``/``waveforms_csv_loader`` and
+    ``waveforms_pdf_suffix`` are overridable per subclass because
+    ``abr.py``'s ``summarize_abr`` and ``summarize_mlr_llr`` use different
+    output filenames and CSV layouts for what is otherwise the same kind of
+    waveform data (see ``MLRLLRIOBase`` below).
+    """
+
+    waveforms_csv_suffix = 'ABR average waveforms.csv'
+    waveforms_csv_loader = staticmethod(load_abr_waveforms)
+    waveforms_pdf_suffix = 'ABR waveforms.pdf'
 
     @plot_callback('Waveforms')
     def load_waveforms(self):
@@ -150,8 +163,8 @@ class ERPIO(CFTSDataTypeDescription):
         from bokeh.layouts import column as bk_column, row as bk_row
         from bokeh.resources import CDN
 
-        filename = self.path / f'{self.path.name} ABR average waveforms.csv'
-        df = load_abr_waveforms(filename)
+        filename = self.get_file(self.waveforms_csv_suffix)
+        df = self.waveforms_csv_loader(filename)
         grouping = list(df.groupby('frequency'))
         picks = _load_all_analyzed(self.path)  # {rater: {freq_hz: {...}}}
         raters = sorted(picks.keys())
@@ -452,7 +465,7 @@ flat_peak_renderers.forEach((r, i) => {
 
     @pdf_callback('Waveforms PDF')
     def get_waveforms_pdf(self):
-        return self._get_pdf('ABR waveforms.pdf')
+        return self._get_pdf(self.waveforms_pdf_suffix)
 
 
 class ABRIO(ERPIO):
@@ -526,12 +539,34 @@ class ABRIOClick(ABRIO):
     experiment = 'abr_io_click'
 
 
-class MLRLLRIOFreeField(ERPIO):
+class MLRLLRIOBase(ERPIO):
+    """Common output layout for all ``mlr_llr_io_*`` variants (booth and
+    freefield, tone and click), produced by ``cftsdata.summarize_mlr_llr``.
+
+    That module saves separate ``ABR``/``MLR``/``LLR average waveforms.csv``
+    files (no polarity/epoch_n columns, unlike ``summarize_abr``'s single
+    combined CSV) and a single ``waveforms.pdf`` (not ``ABR waveforms.pdf``).
+    The interactive viewer shows the ABR-band CSV, matching what
+    :class:`ERPIO` shows for plain ABR I/O.
+    """
+
+    experiment = None
+    waveforms_csv_suffix = 'ABR average waveforms.csv'
+    waveforms_csv_loader = staticmethod(load_mlr_llr_waveforms)
+    waveforms_pdf_suffix = 'waveforms.pdf'
+
+
+class MLRLLRIOClick(MLRLLRIOBase):
+
+    experiment = 'mlr_llr_io_click'
+
+
+class MLRLLRIOFreeField(MLRLLRIOBase):
 
     experiment = 'mlr_llr_io_tone_freefield'
 
 
-class MLRLLRIOClickFreeField(ERPIO):
+class MLRLLRIOClickFreeField(MLRLLRIOBase):
 
     experiment = 'mlr_llr_io_click_freefield'
 
