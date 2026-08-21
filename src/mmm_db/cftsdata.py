@@ -606,12 +606,57 @@ class IEC(CFTSDataTypeDescription):
         return self._get_pdf('calibration.pdf')
 
 
-class EFRRAM(CFTSDataTypeDescription):
+class EFR(CFTSDataTypeDescription):
+    """Common outputs shared by the SAM and RAM EFR paradigms, produced by
+    ``cftsdata.summarize_efr`` (EEG spectrum/harmonics, stimulus level) and
+    ``cftsdata.summarize_ecg`` (heart rate, run on every ``efr_*``
+    experiment alongside ``abr_io``)."""
+
+    experiment = None
+
+    @pdf_callback('EEG Spectrum PDF')
+    def get_eeg_spectrum_pdf(self):
+        return self._get_pdf('EEG spectrum.pdf')
+
+    @pdf_callback('Stimulus SPL PDF')
+    def get_stimulus_spl_pdf(self):
+        return self._get_pdf('stimulus SPL.pdf')
+
+    @pdf_callback('ECG PDF')
+    def get_ecg_pdf(self):
+        return self._get_pdf('ECG.pdf')
+
+    @dict_callback('EFR Response', 'fa-wave-square')
+    def get_efr_response(self):
+        # ``psd_norm`` is already ``psd - psd_nf`` (dB re: noise floor),
+        # computed by cftsdata.summarize_efr.extract_harmonics.
+        df = pd.read_csv(self.get_file('EFR harmonics.csv'))
+        fundamental = df[df['harmonic'] == 0].sort_values(['fc', 'fm'])
+        return {
+            f'{row.fm:.0f} Hz / {row.fc / 1000:g} kHz':
+                f'{row.psd:.1f} dB (SNR {row.psd_norm:.1f} dB), PLV {row.plv:.2f}'
+            for row in fundamental.itertuples()
+        }
+
+    @dict_callback('Processing Settings', 'fa-sliders')
+    def get_processing_settings(self):
+        import json
+        info = json.loads(self.get_file('EFR processing settings.json').read_text())
+        return {
+            'Segment duration (s)': f'{info["segment_duration"]:.2f}',
+            'Draws per bootstrap': f'{info["n_draw"]}',
+            'Bootstrap iterations': f'{info["n_bootstrap"]}',
+            'Harmonics analyzed': f'{info["n_harmonics"]}',
+            'Target sampling rate (Hz)': f'{info["target_fs"]:.0f}',
+        }
+
+
+class EFRRAM(EFR):
 
     experiment = 'efr_ram_epoch'
 
 
-class EFRSAM(CFTSDataTypeDescription):
+class EFRSAM(EFR):
 
     experiment = 'efr_sam_epoch'
 
