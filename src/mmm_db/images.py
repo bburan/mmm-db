@@ -76,7 +76,7 @@ def _load_czi_xy_proj(path):
 
 P_IMAGE_FILENAME = re.compile(
     r'(?P<animal_id>[-\w]+)'
-    r'(?P<ear>L|R)-63x-[-\w]+[_-](?P<image>IHC|IHC-OHC)[_-]'
+    r'(?P<ear>L|R)-63x-[-\w]+[_-](?P<image>IHC|IHC-OHC|IHC_OHC)[_-]'
     r'(?P<frequency>[p\d]+)_kHz\w?[_-]?'
     # Allow for notes at end after the kHz. The negative lookahead makes sure
     # that the replicate doesn't try to consume the number of IHCs instead.
@@ -118,7 +118,7 @@ def parse_filename(path):
 
     if image_type == 'IHC':
         info['image_type'] = 'IHC (synapses)'
-    elif image_type == 'IHC-OHC':
+    elif image_type in ('IHC-OHC', 'IHC_OHC'):
         info['image_type'] = 'IHC and OHC (counts)'
     else:
         return None
