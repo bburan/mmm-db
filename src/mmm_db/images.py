@@ -12,7 +12,7 @@ from PIL import Image
 from psiaudio.util import nearest_octave
 
 from colony_manager.datatypes import (
-    DataTypeDescription, plot_callback, image_callback, cache_root,
+    DataTypeDescription, plot_callback, pdf_callback, image_callback, cache_root,
 )
 
 
@@ -84,6 +84,14 @@ P_IMAGE_FILENAME = re.compile(
     r'(?:(?P<IHCs>\d+)_IHC)?'
 )
 EAR_MAP = {'L': 'Left', 'R': 'Right'}
+
+
+# Cochleogram folders are named ``<animal_id><L|R>-<labeling...>`` where the
+# animal_id itself contains hyphens (e.g. ``B004-1L-DAPI-CtBP2-MyosinVIIa`` →
+# animal ``B004-1``, Left ear; ``B008-CL-...`` → ``B008-C``, Left;
+# ``B010-21L-...`` → ``B010-21``, Left). The non-greedy ``\w+?`` before the
+# side letter lets the trailing ``[LR]-`` anchor claim the true ear letter.
+P_COCHLEOGRAM = re.compile(r'^(?P<animal_id>[A-Za-z]+\d+-\w+?)(?P<ear>[LR])-')
 
 
 def pfreq_to_freq(x, octave_step=0.5):
@@ -247,8 +255,185 @@ class CZIDataTypeDescription(DataTypeDescription):
         return parse_filename(self.path)
 
 
-class Synaptogram(CZIDataTypeDescription):
-    pass
+class Synaptogram(DataTypeDescription):
+    """A single confocal synaptogram image (raw + optional analysis).
+
+    One entry per :class:`ConfocalImage`, keyed on the *raw* per-image
+    file, which exists in one of two formats depending on acquisition era:
+
+    * Zeiss / napari: ``..._<freq>_kHz.czi`` with a co-located analyzed
+      sidecar ``..._<freq>_kHz.syn``.
+    * Leica / imaris: the raw single-image export ``..._<freq>_kHz_<rep>.ims``
+      (the whole-ear ``.lif`` archive is not ingested per-image) with a
+      co-located analyzed sidecar ``..._<freq>_kHz_<rep>_<N>_IHC.ims``.
+
+    The analyzed synaptogram is surfaced through the ``Synaptogram``
+    callback rather than a separate DataType, and ``get_rating_status``
+    reports whether that sidecar has been produced yet.
+    """
+
+    supports_rating = True
+
+    def hash_files(self):
+        if self.path.exists():
+            return [self.path]
+        return []
+
+    def parse(self):
+        p = str(self.path)
+        if 'imaris' in p or 'napari' in p or '_exclude' in p:
+            return None
+        suffix = self.path.suffix.lower()
+        if suffix == '.czi':
+            return parse_filename(self.path)
+        # Raw imaris export only — the analyzed ``_..._IHC.ims`` sidecar is
+        # surfaced via a callback on this entry, not as its own entry.
+        if suffix == '.ims' and not self.path.name.endswith('_IHC.ims'):
+            return parse_filename(self.path)
+        return None
+
+    def _analyzed_path(self):
+        """Return the analyzed sidecar for this raw image, or ``None``.
+
+        Prefers a same-stem napari ``.syn``; otherwise the imaris
+        ``<stem>_<N>_IHC.ims`` produced for this exact image/replicate.
+        """
+        parent, stem = self.path.parent, self.path.stem
+        if self.path.suffix.lower() == '.czi':
+            syn = parent / f'{stem}.syn'
+            if syn.exists():
+                return syn
+        matches = sorted(parent.glob(f'{stem}_*_IHC.ims'))
+        return matches[0] if matches else None
+
+    def get_rating_status(self):
+        analyzed = self._analyzed_path()
+        if analyzed is None:
+            return {'is_rated': False, 'note': 'Not analyzed'}
+        kind = 'napari' if analyzed.suffix.lower() == '.syn' else 'imaris'
+        return {'is_rated': True, 'note': f'Analyzed ({kind})'}
+
+    @plot_callback('Image')
+    def load_image_plotly(self):
+        if self.path.suffix.lower() == '.czi':
+            info, arr = _load_czi_xy_proj(self.path)
+            return _synaptogram_to_bokeh(
+                arr, info.get('channels', []), scatter_data=[])
+        # Raw imaris export: render its channels (no analysis overlay).
+        return self._load_ims_plot(self.path)
+
+    @plot_callback('Synaptogram')
+    def load_synaptogram_plot(self):
+        analyzed = self._analyzed_path()
+        if analyzed is None:
+            raise FileNotFoundError(
+                f'No analyzed synaptogram for {self.path.name}')
+        if analyzed.suffix.lower() == '.syn':
+            return self._load_syn_plot(analyzed)
+        return self._load_ims_plot(analyzed)
+
+    def _load_syn_plot(self, path):
+        import pandas as pd
+        import tifffile
+        from io import StringIO
+
+        with tifffile.TiffFile(str(path)) as fh:
+            metadata = json.loads(fh.pages[0].description)
+            image = fh.asarray()  # (X, Y, Z, n_channels)
+
+        xy_proj = image.max(axis=2)  # (X, Y, n_channels)
+
+        names = metadata.get('name', [])
+        colormaps = metadata.get('colormap', [])
+
+        # Prefer masked layers; fall back to all layers if none exist.
+        indices = [i for i, n in enumerate(names) if 'masked' in n.lower()]
+        if not indices:
+            indices = list(range(len(names)))
+
+        xy_proj = xy_proj[..., indices]
+        channels = [
+            {'name': names[i],
+             'display_color': _NAPARI_COLORMAP_TO_HEX.get(colormaps[i], '#ffffff')}
+            for i in indices
+        ]
+
+        scatter_data = []
+        for layer_name, points_md in metadata.get('points', {}).items():
+            df = pd.read_csv(StringIO(points_md['data']))
+            scatter_data.append((layer_name, df['x'].values, df['y'].values))
+
+        return _synaptogram_to_bokeh(xy_proj, channels, scatter_data)
+
+    def _load_ims_plot(self, path):
+        import h5py
+
+        def _str(attrs, key):
+            return ''.join(attrs[key].astype('U'))
+
+        def _val(attrs, key):
+            return float(_str(attrs, key))
+
+        with h5py.File(str(path), 'r') as fh:
+            img_attrs = fh['DataSetInfo/Image'].attrs
+            xlb = _val(img_attrs, 'ExtMin0'); xub = _val(img_attrs, 'ExtMax0')
+            ylb = _val(img_attrs, 'ExtMin1'); yub = _val(img_attrs, 'ExtMax1')
+            nx = int(_val(img_attrs, 'X'))
+            ny = int(_val(img_attrs, 'Y'))
+            nz = int(_val(img_attrs, 'Z'))
+            vx = abs(xub - xlb) / nx
+            vy = abs(yub - ylb) / ny
+
+            # Image: one HDF5 node per channel under ResolutionLevel 0 / TimePoint 0
+            raw, emission, ch_names, ch_colors = [], [], [], []
+            tp = fh['DataSet/ResolutionLevel 0/TimePoint 0']
+            for i, ch_node in enumerate(tp.values()):
+                raw.append(ch_node['Data'][:][..., np.newaxis])
+                c_attrs = fh[f'DataSetInfo/Channel {i}'].attrs
+                e = _str(c_attrs, 'LSMEmissionWavelength')
+                emission.append(float(e.split('-')[0]))
+                try:
+                    ch_names.append(_str(c_attrs, 'Name'))
+                except KeyError:
+                    ch_names.append(f'Channel {i + 1}')
+                try:
+                    # Imaris stores Color as space-separated RGB floats 0–1
+                    rgb = [int(float(v) * 255)
+                           for v in _str(c_attrs, 'Color').split()]
+                    ch_colors.append(f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}')
+                except Exception:
+                    ch_colors.append(None)
+
+            i_sort = np.argsort(emission)
+            data = np.concatenate(raw, axis=-1)          # (z, y, x, n_ch)
+            data = data[:nz, :ny, :nx, :][:, :, :, i_sort]
+            data = data.swapaxes(0, 2)                   # (x, y, z, n_ch)
+
+            channels = []
+            for i_c in i_sort:
+                name = ch_names[i_c]
+                color = (ch_colors[i_c]
+                         or _MARKER_COLORS.get(name, '#ffffff'))
+                channels.append({'name': name, 'display_color': color})
+
+            # Points: physical μm → pixel indices
+            points_by_marker = {}
+            for node_name, node in fh['Scene/Content'].items():
+                if not node_name.startswith('Points'):
+                    continue
+                if 'CoordsXYZR' not in node:
+                    continue
+                marker = node.attrs['Name'][0].decode('utf')
+                coords = node['CoordsXYZR'][:]          # (n, 4): x, y, z, r
+                xi = np.round((coords[:, 0] - xlb) / vx).astype(int)
+                yi = np.round((coords[:, 1] - ylb) / vy).astype(int)
+                points_by_marker[marker] = (xi, yi)
+
+        xy_proj = data.max(axis=2)                      # (x, y, n_ch)
+        scatter_data = [
+            (marker, xi, yi) for marker, (xi, yi) in points_by_marker.items()
+        ]
+        return _synaptogram_to_bokeh(xy_proj, channels, scatter_data)
 
 
 _MARKER_COLORS = {
@@ -468,136 +653,38 @@ img_source.change.emit();
     }
 
 
-class SynaptogramAnalysis(DataTypeDescription):
-
-    def hash_files(self):
-        if self.path.exists():
-            return [self.path]
-        return []
-
-    def parse(self):
-        if '_exclude' in str(self.path):
-            return
-        if self.path.suffix not in ('.syn', '.ims'):
-            return None
-        if self.path.suffix == '.ims':
-            if not self.path.name.endswith('_IHC.ims'):
-                return None
-        return parse_filename(self.path)
-
-    @plot_callback('Synaptogram')
-    def load_synaptogram_plot(self):
-        if self.path.suffix == '.syn':
-            return self._load_syn_plot()
-        if self.path.suffix == '.ims':
-            return self._load_ims_plot()
-
-    def _load_syn_plot(self):
-        import pandas as pd
-        import tifffile
-        from io import StringIO
-
-        with tifffile.TiffFile(str(self.path)) as fh:
-            metadata = json.loads(fh.pages[0].description)
-            image = fh.asarray()  # (X, Y, Z, n_channels)
-
-        xy_proj = image.max(axis=2)  # (X, Y, n_channels)
-
-        names = metadata.get('name', [])
-        colormaps = metadata.get('colormap', [])
-
-        # Prefer masked layers; fall back to all layers if none exist.
-        indices = [i for i, n in enumerate(names) if 'masked' in n.lower()]
-        if not indices:
-            indices = list(range(len(names)))
-
-        xy_proj = xy_proj[..., indices]
-        channels = [
-            {'name': names[i],
-             'display_color': _NAPARI_COLORMAP_TO_HEX.get(colormaps[i], '#ffffff')}
-            for i in indices
-        ]
-
-        scatter_data = []
-        for layer_name, points_md in metadata.get('points', {}).items():
-            df = pd.read_csv(StringIO(points_md['data']))
-            scatter_data.append((layer_name, df['x'].values, df['y'].values))
-
-        return _synaptogram_to_bokeh(xy_proj, channels, scatter_data)
-
-    def _load_ims_plot(self):
-        import h5py
-
-        def _str(attrs, key):
-            return ''.join(attrs[key].astype('U'))
-
-        def _val(attrs, key):
-            return float(_str(attrs, key))
-
-        with h5py.File(str(self.path), 'r') as fh:
-            img_attrs = fh['DataSetInfo/Image'].attrs
-            xlb = _val(img_attrs, 'ExtMin0'); xub = _val(img_attrs, 'ExtMax0')
-            ylb = _val(img_attrs, 'ExtMin1'); yub = _val(img_attrs, 'ExtMax1')
-            nx = int(_val(img_attrs, 'X'))
-            ny = int(_val(img_attrs, 'Y'))
-            nz = int(_val(img_attrs, 'Z'))
-            vx = abs(xub - xlb) / nx
-            vy = abs(yub - ylb) / ny
-
-            # Image: one HDF5 node per channel under ResolutionLevel 0 / TimePoint 0
-            raw, emission, ch_names, ch_colors = [], [], [], []
-            tp = fh['DataSet/ResolutionLevel 0/TimePoint 0']
-            for i, ch_node in enumerate(tp.values()):
-                raw.append(ch_node['Data'][:][..., np.newaxis])
-                c_attrs = fh[f'DataSetInfo/Channel {i}'].attrs
-                e = _str(c_attrs, 'LSMEmissionWavelength')
-                emission.append(float(e.split('-')[0]))
-                try:
-                    ch_names.append(_str(c_attrs, 'Name'))
-                except KeyError:
-                    ch_names.append(f'Channel {i + 1}')
-                try:
-                    # Imaris stores Color as space-separated RGB floats 0–1
-                    rgb = [int(float(v) * 255)
-                           for v in _str(c_attrs, 'Color').split()]
-                    ch_colors.append(f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}')
-                except Exception:
-                    ch_colors.append(None)
-
-            i_sort = np.argsort(emission)
-            data = np.concatenate(raw, axis=-1)          # (z, y, x, n_ch)
-            data = data[:nz, :ny, :nx, :][:, :, :, i_sort]
-            data = data.swapaxes(0, 2)                   # (x, y, z, n_ch)
-
-            channels = []
-            for i_c in i_sort:
-                name = ch_names[i_c]
-                color = (ch_colors[i_c]
-                         or _MARKER_COLORS.get(name, '#ffffff'))
-                channels.append({'name': name, 'display_color': color})
-
-            # Points: physical μm → pixel indices
-            points_by_marker = {}
-            for node_name, node in fh['Scene/Content'].items():
-                if not node_name.startswith('Points'):
-                    continue
-                if 'CoordsXYZR' not in node:
-                    continue
-                marker = node.attrs['Name'][0].decode('utf')
-                coords = node['CoordsXYZR'][:]          # (n, 4): x, y, z, r
-                xi = np.round((coords[:, 0] - xlb) / vx).astype(int)
-                yi = np.round((coords[:, 1] - ylb) / vy).astype(int)
-                points_by_marker[marker] = (xi, yi)
-
-        xy_proj = data.max(axis=2)                      # (x, y, n_ch)
-        scatter_data = [
-            (marker, xi, yi) for marker, (xi, yi) in points_by_marker.items()
-        ]
-        return _synaptogram_to_bokeh(xy_proj, channels, scatter_data)
-
-
 class IHCOHCCount(CZIDataTypeDescription):
-    pass
+    """A single confocal IHC/OHC-count image (raw + optional analysis).
+
+    Keyed on the raw ``.czi``; the analyzed cell picks live in a
+    co-located ``<stem>_analysis.json`` sidecar, surfaced through the
+    ``IHC and OHC counts`` callback rather than a separate DataType.
+    ``get_rating_status`` reports whether that sidecar exists.
+    """
+
+    supports_rating = True
+
+    def _analysis_path(self):
+        return self.path.with_name(f'{self.path.stem}_analysis.json')
+
+    def get_rating_status(self):
+        if self._analysis_path().exists():
+            return {'is_rated': True, 'note': 'Analyzed'}
+        return {'is_rated': False, 'note': 'Not analyzed'}
+
+    def _load_base(self):
+        info, arr = _load_czi_xy_proj(self.path)
+        analysis = json.loads(self._analysis_path().read_text())
+        data = analysis.get('data', analysis)
+        return info, arr, data
+
+    @plot_callback('IHC and OHC counts')
+    def load_count_plot(self):
+        info, arr, data = self._load_base()
+        return _synaptogram_to_bokeh(
+            arr, info.get('channels', []), scatter_data=[],
+            overlay_fn=lambda p: _add_bokeh_overlays(p, info, data),
+        )
 
 
 def _parse_channel_color(display_color):
@@ -657,88 +744,54 @@ def _add_bokeh_overlays(p, info, data):
                       line_color='white', line_width=0.5)
 
 
-class IHCOHCCountAnalysis(DataTypeDescription):
+class Cochleogram(DataTypeDescription):
+    """A whole-ear cochleogram folder, keyed on the ear.
 
-    def hash_files(self):
-        """Return the analysis JSON and associated CZI for hashing.
+    Targets the folder itself (``is_folder=True``); a folder qualifies when
+    its name starts with an ``<animal_id><L|R>`` prefix **and** it directly
+    contains a ``*_frequency_map.pdf``. That "contains the map" rule keeps
+    the target well-defined even when cochleogram folders are nested inside
+    one another (each folder resolves to the ear named by its own folder
+    name) and skips sibling folders like ``original map`` or
+    ``exclude - ...`` whose names don't start with an animal ID.
+
+    The frequency map drives hashing and the sole callback for now; the raw
+    ``_piece_N.czi`` / ``_analysis.json`` siblings live alongside it under
+    ``self.path`` and can be surfaced through additional callbacks later.
+    """
+
+    def _frequency_maps(self):
+        """Return the ``*_frequency_map.pdf`` files directly in this folder.
+
+        The PDF stem does not always match the folder name (e.g. folder
+        ``B008-CL-DAPI-CtBP2-MyosinVIIa`` holds
+        ``B008-CL-CtBP2-MyosinVIIa_frequency_map.pdf``), so glob rather than
+        construct the name from the folder.
+        """
+        if not self.path.is_dir():
+            return []
+        return sorted(self.path.glob('*_frequency_map.pdf'))
+
+    def parse(self):
+        """Parse the folder name for the ear (animal_id + side).
 
         Returns
         -------
-        list of Path
+        dict or None
+            ``{'animal_id': [...], 'side': 'Left'|'Right'}`` when the folder
+            name matches and a frequency map is present, else ``None``.
         """
-        paths = []
-        if self.path.exists():
-            paths.append(self.path)
-        czi = self.path.parent / self.path.name.replace('_analysis.json', '.czi')
-        if czi.exists():
-            paths.append(czi)
-        return paths
-
-    def parse(self):
-        if '_exclude' in str(self.path):
-            return
-        if not self.path.name.endswith('_analysis.json'):
+        m = P_COCHLEOGRAM.match(self.path.name)
+        if not m or not self._frequency_maps():
             return None
-        return parse_filename(self.path)
+        return {'animal_id': [m['animal_id']], 'side': EAR_MAP[m['ear']]}
 
-    def _load_base(self):
-        czi_path = self.path.parent / self.path.name.replace('_analysis.json', '.czi')
-        info, arr = _load_czi_xy_proj(czi_path)
-        analysis = json.loads(self.path.read_text())
-        data = analysis.get('data', analysis)
-        return info, arr, data
+    def hash_files(self):
+        return self._frequency_maps()
 
-    def _add_overlays(self, fig, info, data):
-        """Overlay spline paths and cell markers onto *fig* (in-place)."""
-        import plotly.graph_objects as go
-        from cochleogram.model import Points
-
-        vx, vy = info['voxel_size'][0], info['voxel_size'][1]
-        lx, ly = info['lower'][0], info['lower'][1]
-
-        def to_px(xs, ys):
-            return [(x - lx) / vx for x in xs], [(y - ly) / vy for y in ys]
-
-        for cell_type, color in _CELL_COLORS.items():
-            spiral_state = data.get('spirals', {}).get(cell_type, {})
-            if spiral_state.get('x'):
-                p = Points(x=spiral_state['x'], y=spiral_state['y'],
-                           origin=spiral_state.get('origin', 0))
-                xi, yi = p.interpolate()
-                if len(xi):
-                    px_x, px_y = to_px(xi, yi)
-                    fig.add_trace(go.Scatter(
-                        x=px_x, y=px_y,
-                        mode='lines',
-                        name=f'{cell_type} path',
-                        line=dict(color=color, width=1.5),
-                    ))
-
-        for cell_type, color in _CELL_COLORS.items():
-            cells = data.get('cells', {}).get(cell_type, {})
-            xc, yc = cells.get('x', []), cells.get('y', [])
-            if xc:
-                px_x, px_y = to_px(xc, yc)
-                fig.add_trace(go.Scatter(
-                    x=px_x, y=px_y,
-                    mode='markers',
-                    name=cell_type,
-                    marker=dict(color=color, size=8,
-                                line=dict(color='white', width=0.5)),
-                ))
-
-    @plot_callback('IHC and OHC counts')
-    def load_count_plot(self):
-        info, arr, data = self._load_base()
-        return _synaptogram_to_bokeh(
-            arr, info.get('channels', []), scatter_data=[],
-            overlay_fn=lambda p: _add_bokeh_overlays(p, info, data),
-        )
-
-    @plot_callback('IHC and OHC counts (channels)')
-    def load_count_plot_channels(self):
-        info, arr, data = self._load_base()
-        return _synaptogram_to_bokeh(
-            arr, info.get('channels', []), scatter_data=[],
-            overlay_fn=lambda p: _add_bokeh_overlays(p, info, data),
-        )
+    @pdf_callback('Frequency Map')
+    def get_frequency_map_pdf(self):
+        maps = self._frequency_maps()
+        if not maps:
+            raise FileNotFoundError(f'No frequency map in {self.path}')
+        return maps[0]

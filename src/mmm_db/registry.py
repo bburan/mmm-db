@@ -22,9 +22,8 @@ DESCRIPTION_CLASSES = {
     'CFTS: MEMR (Sweep Click)': cftsdata.MEMRSweepClick,
     'CFTS: Noise Exposure': cftsdata.NoiseExposure,
     'Histology: Synaptogram': images.Synaptogram,
-    'Histology: Synaptogram (Analysis)': images.SynaptogramAnalysis,
     'Histology: IHC and OHC counts': images.IHCOHCCount,
-    'Histology: IHC and OHC counts (Analysis)': images.IHCOHCCountAnalysis,
+    'Histology: Cochleogram': images.Cochleogram,
     'Photos: Animal': photos.AnimalPhoto,
     'Photos: Ear Dissection Notes': photos.EarDissectionNotes,
 }

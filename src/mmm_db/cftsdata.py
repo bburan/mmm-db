@@ -1,3 +1,5 @@
+import re
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -661,9 +663,61 @@ class EFRSAM(EFR):
     experiment = 'efr_sam_epoch'
 
 
+# A single animal ID token, e.g. ``B028-1`` or ``G011-2``. Used to pull every
+# animal out of a multi-animal noise-exposure folder name.
+P_NOISE_EXPOSURE_ANIMAL = re.compile(r'^[A-Za-z]+\d+-\d+$')
+
+
 class NoiseExposure(CFTSDataTypeDescription):
 
     experiment = 'noise_exposure'
+
+    def parse(self):
+        """Parse a (possibly multi-animal) noise-exposure folder name.
+
+        Noise exposures are frequently run on several animals at once, so a
+        folder name may list multiple animal IDs — separated by whitespace or
+        commas, and not necessarily right after the experimenter, e.g.::
+
+            20230613-083735 Sean B028-1 B028-4 B029-1 B029-2 exposure noise_exposure
+            20250819-091648 Sean G011-1,G011-2 103 dB SPL noise_exposure
+            20250916-125017 B123-1,B123-2 Sean 97 dB SPL 2h noise_exposure
+
+        so ``cftsdata``'s single-animal ``parse_psi_filename`` cannot handle
+        them (it raises outright). Scan the whole folder name for animal-ID
+        tokens instead; a single-animal folder simply yields a one-element
+        list. The framework already links one ``Data`` row to every matched
+        animal's event, so returning the full list is all that's needed.
+
+        Returns
+        -------
+        dict or None
+            ``{'animal_id': [...], 'date': date, 'experiment_type':
+            'noise_exposure'}`` when at least one animal ID is found, else
+            ``None``.
+        """
+        if '_exclude' in str(self.path):
+            return None
+        stem = self.path.stem
+        if not stem.endswith(self.experiment):
+            return None
+
+        m = re.match(r'(\d{8}-\d{6})', stem)
+        date = datetime.strptime(m.group(1), '%Y%m%d-%H%M%S').date() if m else None
+
+        animal_ids, seen = [], set()
+        for token in re.split(r'[\s,]+', stem):
+            if P_NOISE_EXPOSURE_ANIMAL.match(token) and token not in seen:
+                seen.add(token)
+                animal_ids.append(token)
+        if not animal_ids:
+            return None
+
+        return {
+            'animal_id': animal_ids,
+            'date': date,
+            'experiment_type': self.experiment,
+        }
 
     @pdf_callback('Noise Exposure PDF')
     def get_noise_exposure_pdf(self):
