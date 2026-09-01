@@ -94,6 +94,14 @@ EAR_MAP = {'L': 'Left', 'R': 'Right'}
 P_COCHLEOGRAM = re.compile(r'^(?P<animal_id>[A-Za-z]+\d+-\w+?)(?P<ear>[LR])-')
 
 
+def _csv_row_count(csv_text):
+    """Count data rows (excluding the header) in an embedded CSV string."""
+    if not csv_text:
+        return 0
+    lines = [ln for ln in csv_text.splitlines() if ln.strip()]
+    return max(0, len(lines) - 1)
+
+
 def pfreq_to_freq(x, octave_step=0.5):
     a, b = x.split('p')
     freq = int(a) + int(b) / 10
@@ -307,11 +315,76 @@ class Synaptogram(DataTypeDescription):
         return matches[0] if matches else None
 
     def get_rating_status(self):
+        """Report whether the synaptogram has been analyzed.
+
+        napari (``.syn``): analyzed once both the ``IHCs`` and
+        ``CtBP2 masked points`` point layers *exist* — a layer may be
+        legitimately empty (no ribbons in a region), the same principle as
+        an empty cochleogram spiral, so presence (not count) is the test.
+        imaris (``_IHC.ims``): the analyzed export only exists once the
+        image has been analyzed, so its presence marks the image rated.
+        Point/IHC counts are reported for context.
+        """
         analyzed = self._analyzed_path()
         if analyzed is None:
             return {'is_rated': False, 'note': 'Not analyzed'}
         kind = 'napari' if analyzed.suffix.lower() == '.syn' else 'imaris'
-        return {'is_rated': True, 'note': f'Analyzed ({kind})'}
+        try:
+            return (self._syn_rating(analyzed) if kind == 'napari'
+                    else self._ims_rating(analyzed))
+        except Exception:
+            # Sidecar exists but couldn't be parsed — still analyzed; don't
+            # crash the nightly rating job over a summary.
+            return {'is_rated': True, 'note': f'Analyzed ({kind})'}
+
+    # A finished napari synaptogram carries both of these point layers.
+    SYN_REQUIRED_LAYERS = ('IHCs', 'CtBP2 masked points')
+
+    @classmethod
+    def _syn_rating(cls, path):
+        """Rate a napari ``.syn`` by the presence of its two point layers.
+
+        Reads only page 0's JSON metadata (no image array).
+        """
+        import tifffile
+        with tifffile.TiffFile(str(path)) as fh:
+            points = json.loads(fh.pages[0].description).get('points', {})
+        missing = [name for name in cls.SYN_REQUIRED_LAYERS if name not in points]
+        if missing:
+            return {'is_rated': False,
+                    'note': f"Partial (napari) — missing {', '.join(missing)} layer"}
+        n_syn = _csv_row_count(points['CtBP2 masked points'].get('data', ''))
+        n_ihc = _csv_row_count(points['IHCs'].get('data', ''))
+        return {'is_rated': True,
+                'note': f'Analyzed (napari) — {n_syn} synapses / {n_ihc} IHCs'}
+
+    @staticmethod
+    def _ims_rating(path):
+        """Rate an imaris ``_IHC.ims`` by presence of its CtBP2 ribbon layer.
+
+        The synapse ribbons live in a Spots (Points) node under
+        ``Scene/Content`` — its presence marks the image analyzed (the
+        count may be zero, same presence-not-count principle as ``.syn``).
+        The IHC count is taken from the filename (``..._<N>_IHC.ims``),
+        not the file contents. Reads metadata only, no image arrays.
+        """
+        import h5py
+        n_syn = 0
+        has_ctbp2_layer = False
+        with h5py.File(str(path), 'r') as fh:
+            content = fh['Scene/Content']
+            for node_name in content:
+                node = content[node_name]
+                if node_name.startswith('Points') and 'CoordsXYZR' in node:
+                    has_ctbp2_layer = True
+                    n_syn += int(node['CoordsXYZR'].shape[0])
+        m = re.search(r'_(\d+)_IHC\.ims$', path.name)
+        n_ihc = int(m.group(1)) if m else 0
+        if not has_ctbp2_layer:
+            return {'is_rated': False,
+                    'note': 'Partial (imaris) — missing CtBP2 points layer'}
+        return {'is_rated': True,
+                'note': f'Analyzed (imaris) — {n_syn} synapses / {n_ihc} IHCs'}
 
     @plot_callback('Image')
     def load_image_plotly(self):
@@ -659,18 +732,55 @@ class IHCOHCCount(CZIDataTypeDescription):
     Keyed on the raw ``.czi``; the analyzed cell picks live in a
     co-located ``<stem>_analysis.json`` sidecar, surfaced through the
     ``IHC and OHC counts`` callback rather than a separate DataType.
-    ``get_rating_status`` reports whether that sidecar exists.
+    ``get_rating_status`` reports how complete that analysis is.
     """
 
     supports_rating = True
+
+    # A complete cochlear cell count marks one row of inner hair cells and
+    # three rows of outer hair cells. ``Extra`` is an optional scratch layer,
+    # so it isn't required for a count to be considered done.
+    EXPECTED_CELL_TYPES = ('IHC', 'OHC1', 'OHC2', 'OHC3')
 
     def _analysis_path(self):
         return self.path.with_name(f'{self.path.stem}_analysis.json')
 
     def get_rating_status(self):
-        if self._analysis_path().exists():
-            return {'is_rated': True, 'note': 'Analyzed'}
-        return {'is_rated': False, 'note': 'Not analyzed'}
+        """Report per-row completeness of the cell count.
+
+        Completeness is judged by the traced *spiral* for each hair-cell
+        row, not by the marked cells: a row whose spiral is drawn but has
+        zero cells is a valid result (that region has no surviving hair
+        cells), whereas a row with no spiral simply hasn't been traced yet.
+
+        Not analyzed → no sidecar. Partial → the JSON exists but one or
+        more rows have no spiral. Analyzed → all four rows traced, with
+        per-row cell counts in the note.
+        """
+        path = self._analysis_path()
+        if not path.exists():
+            return {'is_rated': False, 'note': 'Not analyzed'}
+        try:
+            analysis = json.loads(path.read_text())
+        except (ValueError, OSError):
+            return {'is_rated': False, 'note': 'Analysis file unreadable'}
+        data = analysis.get('data', analysis)
+        spirals = data.get('spirals', {})
+        cells = data.get('cells', {})
+        traced = [ct for ct in self.EXPECTED_CELL_TYPES
+                  if spirals.get(ct, {}).get('x')]
+        missing = [ct for ct in self.EXPECTED_CELL_TYPES if ct not in traced]
+        if not traced:
+            return {'is_rated': False, 'note': 'Analysis started, no spirals traced'}
+        if missing:
+            return {'is_rated': False,
+                    'note': f"Partial — no spiral for {', '.join(missing)}"}
+        counts = {ct: len(cells.get(ct, {}).get('x') or [])
+                  for ct in self.EXPECTED_CELL_TYPES}
+        return {'is_rated': True, 'note': (
+            f"Analyzed — IHC {counts['IHC']}, "
+            f"OHC {counts['OHC1']}/{counts['OHC2']}/{counts['OHC3']}"
+        )}
 
     def _load_base(self):
         info, arr = _load_czi_xy_proj(self.path)

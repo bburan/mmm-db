@@ -490,7 +490,19 @@ class ABRIO(ERPIO):
             return {'is_rated': False, 'note': 'No frequencies found'}
 
         if not picks:
-            return {'is_rated': False, 'note': f'0 of {n_total} frequencies rated'}
+            return {'is_rated': False,
+                    'note': f'0 of {n_total} frequencies rated', 'raters': []}
+
+        # Surface how many people have rated (and who) so single- vs
+        # multi-rater coverage is visible at a glance — useful for deciding
+        # whether a second rater is still needed. ``raters`` is also
+        # persisted by the sync-rating job so the review page can filter on
+        # rater count and identity.
+        raters = sorted(picks.keys())
+        rater_summary = (
+            f"{len(raters)} rater{'s' if len(raters) != 1 else ''}: "
+            f"{', '.join(raters)}"
+        )
 
         # A waveform frequency is considered rated when any rater has analyzed it.
         rated_freqs = set()
@@ -503,11 +515,11 @@ class ABRIO(ERPIO):
         )
 
         if n_rated == n_total:
-            raters = ', '.join(sorted(picks.keys()))
-            return {'is_rated': True, 'note': f'Rated by {raters}'}
+            return {'is_rated': True, 'raters': raters,
+                    'note': f'All {n_total} frequencies rated — {rater_summary}'}
         return {
-            'is_rated': False,
-            'note': f'{n_rated} of {n_total} frequencies rated',
+            'is_rated': False, 'raters': raters,
+            'note': f'{n_rated} of {n_total} frequencies rated — {rater_summary}',
         }
 
     @pdf_callback('EEG Spectrum PDF')
