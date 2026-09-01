@@ -748,14 +748,15 @@ class IHCOHCCount(CZIDataTypeDescription):
     def get_rating_status(self):
         """Report per-row completeness of the cell count.
 
-        Completeness is judged by the traced *spiral* for each hair-cell
-        row, not by the marked cells: a row whose spiral is drawn but has
-        zero cells is a valid result (that region has no surviving hair
-        cells), whereas a row with no spiral simply hasn't been traced yet.
+        A row is done when its *spiral* is traced, or when it's been
+        explicitly marked **unratable** (``data['unratable']`` maps a
+        cell type to a reason like "tissue missing"; ratable rows are
+        absent). A traced spiral with zero cells is still valid (that
+        region has no surviving hair cells).
 
-        Not analyzed → no sidecar. Partial → the JSON exists but one or
-        more rows have no spiral. Analyzed → all four rows traced, with
-        per-row cell counts in the note.
+        Not analyzed → no sidecar. Partial → a ratable row is neither
+        traced nor marked unratable. Analyzed → every row is traced or
+        unratable, with per-row cell counts in the note.
         """
         path = self._analysis_path()
         if not path.exists():
@@ -767,20 +768,30 @@ class IHCOHCCount(CZIDataTypeDescription):
         data = analysis.get('data', analysis)
         spirals = data.get('spirals', {})
         cells = data.get('cells', {})
+        unratable = data.get('unratable', {}) or {}
+
         traced = [ct for ct in self.EXPECTED_CELL_TYPES
                   if spirals.get(ct, {}).get('x')]
-        missing = [ct for ct in self.EXPECTED_CELL_TYPES if ct not in traced]
-        if not traced:
+        unratable_rows = [ct for ct in self.EXPECTED_CELL_TYPES if ct in unratable]
+        missing = [ct for ct in self.EXPECTED_CELL_TYPES
+                   if ct not in traced and ct not in unratable]
+
+        if not traced and not unratable_rows:
             return {'is_rated': False, 'note': 'Analysis started, no spirals traced'}
         if missing:
             return {'is_rated': False,
                     'note': f"Partial — no spiral for {', '.join(missing)}"}
-        counts = {ct: len(cells.get(ct, {}).get('x') or [])
-                  for ct in self.EXPECTED_CELL_TYPES}
-        return {'is_rated': True, 'note': (
-            f"Analyzed — IHC {counts['IHC']}, "
-            f"OHC {counts['OHC1']}/{counts['OHC2']}/{counts['OHC3']}"
-        )}
+
+        def cell_str(ct):
+            if ct in unratable:
+                return 'n/a'
+            return str(len(cells.get(ct, {}).get('x') or []))
+
+        note = (f"Analyzed — IHC {cell_str('IHC')}, "
+                f"OHC {cell_str('OHC1')}/{cell_str('OHC2')}/{cell_str('OHC3')}")
+        if unratable_rows:
+            note += f" (unratable: {', '.join(unratable_rows)})"
+        return {'is_rated': True, 'note': note}
 
     def _load_base(self):
         info, arr = _load_czi_xy_proj(self.path)
