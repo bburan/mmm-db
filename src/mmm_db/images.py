@@ -784,7 +784,7 @@ class IHCOHCCount(CZIDataTypeDescription):
 
         def cell_str(ct):
             if ct in unratable:
-                return 'n/a'
+                return 'NaN'
             return str(len(cells.get(ct, {}).get('x') or []))
 
         note = (f"Analyzed — IHC {cell_str('IHC')}, "
