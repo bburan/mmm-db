@@ -294,9 +294,21 @@ class Synaptogram(DataTypeDescription):
         suffix = self.path.suffix.lower()
         if suffix == '.czi':
             return parse_filename(self.path)
-        # Raw imaris export only — the analyzed ``_..._IHC.ims`` sidecar is
+
+        # Raw imaris export: only the analyzed ``_..._IHC.ims`` sidecar is
         # surfaced via a callback on this entry, not as its own entry.
+        #
+        # A raw ``.ims`` is only ingested when it came from a Leica ``.lif``.
+        # The Zeiss workflow converts a ``.czi`` to ``.ims`` (same stem)
+        # before the ribbon count, so those ``.ims`` files must be skipped.
+        # Ingest only when both hold: (1) a whole-ear ``.lif`` archive exists
+        # in this folder, and (2) there is no same-stem ``.czi`` this file
+        # could have been derived from.
         if suffix == '.ims' and not self.path.name.endswith('_IHC.ims'):
+            if self.path.with_suffix('.czi').exists():
+                return None
+            if not any(self.path.parent.glob('*.lif')):
+                return None
             return parse_filename(self.path)
         return None
 
