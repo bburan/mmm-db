@@ -77,8 +77,9 @@ for name, info in obj.get_callbacks().items():
     # for pdf callbacks: result.exists() should be True
 ```
 
-Use the `gerbil-manager` conda env (`cftsdata`/`abr`/`psidata` are
-installed there) — from git-bash, `conda activate` needs
+Use the `colony-manager` conda env (`cftsdata`/`abr`/`psidata`/`cochleogram`
+are installed there, as are `colony_manager` and `mmm_db` themselves,
+editable) — from git-bash, `conda activate` needs
 `source /c/Users/buran/bin/anaconda3/etc/profile.d/conda.sh` first. Pass
 Windows-style paths (`M:\...`) to Python, not the git-bash `/m/...`
 mount — Python on Windows doesn't resolve the latter.
