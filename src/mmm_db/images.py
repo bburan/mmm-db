@@ -57,6 +57,13 @@ def _analysts_from_meta(obj):
     return (users or None), (max(times) if times else None)
 
 
+# Bump whenever the *content* of a cached projection changes for an
+# unchanged source file; the cache key folds this in, so stale arrays from
+# an older rule are ignored rather than silently served. v2: IMS sources are
+# flipped on y to match every other reader (see below).
+_PROJ_CACHE_VERSION = 2
+
+
 def _load_confocal_xy_proj(path):
     """Return ``(info, xy_proj)`` for a CZI or IMS, caching both to disk.
 
@@ -74,7 +81,8 @@ def _load_confocal_xy_proj(path):
     path = Path(path)
     stat = path.stat()
     key = hashlib.sha1(
-        f'{path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}'.encode('utf-8'),
+        f'{path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}'
+        f'|v{_PROJ_CACHE_VERSION}'.encode('utf-8'),
     ).hexdigest()
     cache_dir = cache_root('czi-maxproj') / key[:2]
     cache_npy = cache_dir / f'{key[2:]}.npy'
@@ -86,12 +94,24 @@ def _load_confocal_xy_proj(path):
 
     # Zeiss writes one CZI per image; the Leica workflow exports one IMS
     # per series out of the ear's LIF archive (scripts/lif_to_ims.py).
-    if path.suffix.lower() == '.ims':
+    is_ims = path.suffix.lower() == '.ims'
+    if is_ims:
         from cochleogram.util import load_ims as load
     else:
         from cochleogram.util import load_czi as load
     raw_info, img = load(path)
     xy_proj = img.max(axis=-2)
+    if is_ims:
+        # ``load_czi`` and ``load_lif`` both end on ``[::-1]``, described
+        # there as "reorder so that tile origin is in lower corner of
+        # image". ``load_ims`` skips it, so an IMS comes back mirrored on y
+        # against every other reader -- and against the analysis
+        # coordinates, which were recorded through ``load_lif`` on the
+        # ``.lif`` these were split out of. Undoing it here means one
+        # convention reaches the overlays. Verified by correlating an IMS
+        # projection against its own LIF series: 1.0000 flipped, 0.1443
+        # as-is.
+        xy_proj = xy_proj[:, ::-1]
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(suffix='.npy', dir=cache_dir)
