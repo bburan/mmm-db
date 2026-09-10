@@ -57,19 +57,19 @@ def _analysts_from_meta(obj):
     return (users or None), (max(times) if times else None)
 
 
-def _load_czi_xy_proj(path):
-    """Return ``(info, xy_proj)`` for a CZI, caching both to disk.
+def _load_confocal_xy_proj(path):
+    """Return ``(info, xy_proj)`` for a CZI or IMS, caching both to disk.
 
     ``info`` is a dict with ``voxel_size`` and ``lower`` (both lists of
-    floats in μm), taken from the CZI stage metadata.  ``xy_proj`` is the
-    XY max-projection as a ``(X, Y, C)`` uint8 array.
+    floats in μm), taken from the image's stage metadata.  ``xy_proj`` is
+    the XY max-projection as a ``(X, Y, C)`` uint8 array.
 
     The cache key folds in the source's path + mtime + size, so any
     in-place modification invalidates automatically. Cached arrays are
     written atomically via tempfile + ``os.replace``. Both the Plotly
     and JPEG confocal callbacks share this cache, which lives under the
     shared ``COLONY_MANAGER_CACHE_DIR`` root (``czi-maxproj``
-    subnamespace).
+    subnamespace, named before IMS sources were supported).
     """
     path = Path(path)
     stat = path.stat()
@@ -84,8 +84,13 @@ def _load_czi_xy_proj(path):
         info = json.loads(cache_json.read_text())
         return info, np.load(cache_npy, allow_pickle=False)
 
-    from cochleogram.util import load_czi
-    raw_info, img = load_czi(path)
+    # Zeiss writes one CZI per image; the Leica workflow exports one IMS
+    # per series out of the ear's LIF archive (scripts/lif_to_ims.py).
+    if path.suffix.lower() == '.ims':
+        from cochleogram.util import load_ims as load
+    else:
+        from cochleogram.util import load_czi as load
+    raw_info, img = load(path)
     xy_proj = img.max(axis=-2)
 
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -281,7 +286,7 @@ class CZIDataTypeDescription(DataTypeDescription):
 
     @plot_callback('Image')
     def load_image_plotly(self):
-        info, arr = _load_czi_xy_proj(self.path)
+        info, arr = _load_confocal_xy_proj(self.path)
         return _synaptogram_to_bokeh(arr, info.get('channels', []), scatter_data=[])
 
     def parse(self):
@@ -463,7 +468,7 @@ class Synaptogram(DataTypeDescription):
     @plot_callback('Image')
     def load_image_plotly(self):
         if self.path.suffix.lower() == '.czi':
-            info, arr = _load_czi_xy_proj(self.path)
+            info, arr = _load_confocal_xy_proj(self.path)
             return _synaptogram_to_bokeh(
                 arr, info.get('channels', []), scatter_data=[])
         # Raw imaris export: render its channels (no analysis overlay).
@@ -803,9 +808,18 @@ img_source.change.emit();
 class IHCOHCCount(CZIDataTypeDescription):
     """A single confocal IHC/OHC-count image (raw + optional analysis).
 
-    Keyed on the raw ``.czi``; the analyzed cell picks live in a
-    co-located ``<stem>_analysis.json`` sidecar, surfaced through the
-    ``IHC and OHC counts`` callback rather than a separate DataType.
+    Keyed on the raw per-image file, which exists in one of two formats
+    depending on acquisition era:
+
+    * Zeiss: ``..._IHC-OHC_<freq>_kHz.czi``, one file per image.
+    * Leica: ``..._IHC_OHC_<freq>_kHz.ims``, broken out of the ear's
+      whole-``.lif`` archive by ``scripts/lif_to_ims.py``. The ``.lif``
+      itself is never ingested — it holds every frequency for the ear,
+      and sync creates one row per file.
+
+    Either way the analyzed cell picks live in a co-located
+    ``<stem>_analysis.json`` sidecar, surfaced through the ``IHC and OHC
+    counts`` callback rather than a separate DataType.
     ``get_rating_status`` reports how complete that analysis is.
     """
 
@@ -815,6 +829,24 @@ class IHCOHCCount(CZIDataTypeDescription):
     # three rows of outer hair cells. ``Extra`` is an optional scratch layer,
     # so it isn't required for a count to be considered done.
     EXPECTED_CELL_TYPES = ('IHC', 'OHC1', 'OHC2', 'OHC3')
+
+    def parse(self):
+        """Parse the image filename for metadata.
+
+        Extends the CZI-only base to the Leica ``.ims`` exports. A raw
+        ``.ims`` is skipped when a same-stem ``.czi`` sits next to it —
+        the older Zeiss folders (e.g. ``B002-4L``) hold an Imaris
+        conversion of every ``.czi`` alongside the original, and only the
+        ``.czi`` should be ingested. Same guard as
+        :meth:`Synaptogram.parse`.
+        """
+        if self.path.suffix.lower() != '.ims':
+            return super().parse()
+        if '_exclude' in str(self.path):
+            return None
+        if self.path.with_suffix('.czi').exists():
+            return None
+        return parse_filename(self.path)
 
     def _analysis_path(self):
         return self.path.with_name(f'{self.path.stem}_analysis.json')
@@ -880,7 +912,7 @@ class IHCOHCCount(CZIDataTypeDescription):
         return {'is_rated': True, 'note': note, **attr}
 
     def _load_base(self):
-        info, arr = _load_czi_xy_proj(self.path)
+        info, arr = _load_confocal_xy_proj(self.path)
         analysis = json.loads(self._analysis_path().read_text())
         data = analysis.get('data', analysis)
         return info, arr, data
