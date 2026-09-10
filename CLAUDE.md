@@ -99,3 +99,37 @@ mount — Python on Windows doesn't resolve the latter.
   callbacks for files a given processing pipeline step might not have
   been run yet (e.g. `MEMRSweepClick`'s threshold PDF/stats, which come
   from an optional separate `summarize_memr_sweep_th.py` pass).
+
+## Known issues
+
+- **`B029-2L` count images fail to load** — 5 of its 7 series raise
+  `Mismatch between channels in filename and file (GluR2, CtBP2,
+  MyosinVIIa != Channel 0)` out of
+  `cochleogram.util.channels_from_filename`, so their "IHC and OHC
+  counts" plot errors instead of rendering.
+
+  Not a conversion bug: the `.ims` files match the `.lif` channel for
+  channel. `5p7`, `11p3`, `16p0`, `32p0` and `45p3` were *acquired*
+  single-channel (AF647 only) while the folder name promises
+  `GluR2-CtBP2-MyosinVIIa`; `8p0` and `22p6` have all three and load
+  fine. `lif_to_ims.py` copied faithfully what was there.
+
+  All five nonetheless carry an `_analysis.json`, so they were analyzed
+  in that state — whatever is decided, those picks should survive it.
+  Note also that the `.lif` holds an `IHC_OHC_11p3_kHzB` series with the
+  full three channels (a re-scan), and its converted `.ims` is parked in
+  the folder's `_exclude/`, i.e. someone deliberately kept the
+  single-channel `11p3` over it.
+
+  Three ways out, in rough order of preference — all of them data
+  decisions rather than something to paper over in `images.py`:
+
+  1. Rename the folder to the markers actually acquired, so the
+     filename stops promising channels the files never had. Changes the
+     `relative_path` of every row under it, so it wants a `flask data
+     sync` and a check for orphans afterwards.
+  2. Relax `channels_from_filename` upstream to accept a subset of the
+     declared markers. Widest blast radius — it is shared with the
+     analysis app.
+  3. Swap in the `_exclude`-ed `11p3B` re-scan for `11p3`, which fixes
+     exactly one of the five and needs its analysis redone.
