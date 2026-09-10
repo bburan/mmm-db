@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,46 @@ from psiaudio.util import nearest_octave
 from colony_manager.datatypes import (
     DataTypeDescription, plot_callback, pdf_callback, image_callback, cache_root,
 )
+
+
+def _analysts_from_meta(obj):
+    """Extract ``(analyzed_by, analyzed_at)`` from a ``meta.history`` block.
+
+    Newer analysis files (IHC/OHC ``_analysis.json``, napari ``.syn``
+    headers) carry ``obj['meta']['history']`` — a chronological list of
+    ``{'user', 'host', 'modified'}`` entries. Returns the sorted distinct
+    users and the most recent ``modified`` time (as a naive UTC datetime,
+    matching the app's other naive timestamp columns), or ``(None, None)``
+    when the block is absent/empty. Fails soft: a malformed entry never
+    raises, so the nightly rating job can't be crashed by a summary quirk.
+    """
+    if not isinstance(obj, dict):
+        return None, None
+    if 'meta' in obj:
+        meta = obj.get('meta')
+        history = (meta.get('history') if isinstance(meta, dict) else None) or []
+    elif 'history' in obj:
+        history = obj.get('history') or []
+    else:
+        return None, None
+    if not isinstance(history, list):
+        return None, None
+    users = sorted({
+        e['user'] for e in history
+        if isinstance(e, dict) and e.get('user')
+    })
+    times = []
+    for e in history:
+        if not isinstance(e, dict) or not e.get('modified'):
+            continue
+        try:
+            dt = datetime.fromisoformat(e['modified'])
+        except (TypeError, ValueError):
+            continue
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        times.append(dt)
+    return (users or None), (max(times) if times else None)
 
 
 def _load_czi_xy_proj(path):
@@ -342,12 +383,22 @@ class Synaptogram(DataTypeDescription):
             return {'is_rated': False, 'note': 'Not analyzed'}
         kind = 'napari' if analyzed.suffix.lower() == '.syn' else 'imaris'
         try:
-            return (self._syn_rating(analyzed) if kind == 'napari'
-                    else self._ims_rating(analyzed))
+            result = (self._syn_rating(analyzed) if kind == 'napari'
+                      else self._ims_rating(analyzed))
         except Exception:
             # Sidecar exists but couldn't be parsed — still analyzed; don't
             # crash the nightly rating job over a summary.
-            return {'is_rated': True, 'note': f'Analyzed ({kind})'}
+            result = {'is_rated': True, 'note': f'Analyzed ({kind})'}
+        # Fall back to the sidecar's mtime when the analysis carries no
+        # ``meta.history`` timestamp (imaris exports, older napari files);
+        # imaris has no analyst identity either, so ``analyzed_by`` stays unset.
+        if 'analyzed_at' not in result:
+            try:
+                result['analyzed_at'] = datetime.fromtimestamp(
+                    analyzed.stat().st_mtime)
+            except OSError:
+                pass
+        return result
 
     # A finished napari synaptogram carries both of these point layers.
     SYN_REQUIRED_LAYERS = ('IHCs', 'CtBP2 masked points')
@@ -360,15 +411,26 @@ class Synaptogram(DataTypeDescription):
         """
         import tifffile
         with tifffile.TiffFile(str(path)) as fh:
-            points = json.loads(fh.pages[0].description).get('points', {})
+            header = json.loads(fh.pages[0].description)
+        points = header.get('points', {})
+        # Newer ``.syn`` headers carry the same ``meta.history`` block as the
+        # IHC/OHC ``_analysis.json``; attribute the work when present.
+        analyzed_by, analyzed_at = _analysts_from_meta(header)
+        attr = {}
+        if analyzed_by is not None:
+            attr['analyzed_by'] = analyzed_by
+        if analyzed_at is not None:
+            attr['analyzed_at'] = analyzed_at
         missing = [name for name in cls.SYN_REQUIRED_LAYERS if name not in points]
         if missing:
             return {'is_rated': False,
-                    'note': f"Partial (napari) — missing {', '.join(missing)} layer"}
+                    'note': f"Partial (napari) — missing {', '.join(missing)} layer",
+                    **attr}
         n_syn = _csv_row_count(points['CtBP2 masked points'].get('data', ''))
         n_ihc = _csv_row_count(points['IHCs'].get('data', ''))
         return {'is_rated': True,
-                'note': f'Analyzed (napari) — {n_syn} synapses / {n_ihc} IHCs'}
+                'note': f'Analyzed (napari) — {n_syn} synapses / {n_ihc} IHCs',
+                **attr}
 
     @staticmethod
     def _ims_rating(path):
@@ -782,6 +844,17 @@ class IHCOHCCount(CZIDataTypeDescription):
         cells = data.get('cells', {})
         unratable = data.get('unratable', {}) or {}
 
+        # Analysis attribution lives in the top-level ``meta.history`` block
+        # (newer files only); merge it into every post-load return, whether
+        # the analysis is complete or partial, so the scoreboard can credit
+        # in-progress work too. Older files without ``meta`` add nothing.
+        analyzed_by, analyzed_at = _analysts_from_meta(analysis)
+        attr = {}
+        if analyzed_by is not None:
+            attr['analyzed_by'] = analyzed_by
+        if analyzed_at is not None:
+            attr['analyzed_at'] = analyzed_at
+
         traced = [ct for ct in self.EXPECTED_CELL_TYPES
                   if spirals.get(ct, {}).get('x')]
         unratable_rows = [ct for ct in self.EXPECTED_CELL_TYPES if ct in unratable]
@@ -789,10 +862,11 @@ class IHCOHCCount(CZIDataTypeDescription):
                    if ct not in traced and ct not in unratable]
 
         if not traced and not unratable_rows:
-            return {'is_rated': False, 'note': 'Analysis started, no spirals traced'}
+            return {'is_rated': False,
+                    'note': 'Analysis started, no spirals traced', **attr}
         if missing:
             return {'is_rated': False,
-                    'note': f"Partial — no spiral for {', '.join(missing)}"}
+                    'note': f"Partial — no spiral for {', '.join(missing)}", **attr}
 
         def cell_str(ct):
             if ct in unratable:
@@ -803,7 +877,7 @@ class IHCOHCCount(CZIDataTypeDescription):
                 f"OHC {cell_str('OHC1')}/{cell_str('OHC2')}/{cell_str('OHC3')}")
         if unratable_rows:
             note += f" (unratable: {', '.join(unratable_rows)})"
-        return {'is_rated': True, 'note': note}
+        return {'is_rated': True, 'note': note, **attr}
 
     def _load_base(self):
         info, arr = _load_czi_xy_proj(self.path)

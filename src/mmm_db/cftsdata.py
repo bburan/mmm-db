@@ -504,6 +504,21 @@ class ABRIO(ERPIO):
             f"{', '.join(raters)}"
         )
 
+        # The pick files carry no timestamp of their own, so approximate
+        # "when analyzed" with the most recent ``*-analyzed.txt`` mtime. The
+        # named raters double as the scoreboard's ``analyzed_by`` so ABR
+        # shows up in the by-analyst rollup alongside the histology types.
+        analyzed_at = None
+        try:
+            mtimes = [f.stat().st_mtime for f in self.path.glob('*-analyzed.txt')]
+            if mtimes:
+                analyzed_at = datetime.fromtimestamp(max(mtimes))
+        except OSError:
+            pass
+        attr = {'analyzed_by': raters}
+        if analyzed_at is not None:
+            attr['analyzed_at'] = analyzed_at
+
         # A waveform frequency is considered rated when any rater has analyzed it.
         rated_freqs = set()
         for rater_picks in picks.values():
@@ -516,10 +531,12 @@ class ABRIO(ERPIO):
 
         if n_rated == n_total:
             return {'is_rated': True, 'raters': raters,
-                    'note': f'All {n_total} frequencies rated — {rater_summary}'}
+                    'note': f'All {n_total} frequencies rated — {rater_summary}',
+                    **attr}
         return {
             'is_rated': False, 'raters': raters,
             'note': f'{n_rated} of {n_total} frequencies rated — {rater_summary}',
+            **attr,
         }
 
     @pdf_callback('EEG Spectrum PDF')
