@@ -9,6 +9,9 @@ from .psidata import PSIDataTypeDescription, summarize_stretches
 from abtsdata.dataset import parse_abts_filename
 
 
+NO_THRESHOLD_MESSAGE = 'Not enough data to compute threshold'
+
+
 class ABTSDataTypeDescription(PSIDataTypeDescription):
 
     inline_settings = []
@@ -64,7 +67,18 @@ class ABTSDataTypeDescription(PSIDataTypeDescription):
 
     def _get_threshold_modal(self, unit, transform=None):
         file = self.get_file('threshold.csv')
-        df = pd.read_csv(file)
+        if not file.exists():
+            return {'Threshold': NO_THRESHOLD_MESSAGE}
+        try:
+            df = pd.read_csv(file)
+        except pd.errors.EmptyDataError:
+            return {'Threshold': NO_THRESHOLD_MESSAGE}
+
+        # The summarize scripts write an empty placeholder threshold.csv when
+        # the psychometric fit could not be run (e.g., too few depths/gaps).
+        if df.empty:
+            return {'Threshold': NO_THRESHOLD_MESSAGE}
+
         ix_cols = list(df.columns[:-3])
         df = df.set_index(ix_cols)
 
@@ -81,6 +95,12 @@ class ABTSDataTypeDescription(PSIDataTypeDescription):
 
 class ModulationGoNogo(ABTSDataTypeDescription):
     experiment = 'modulation-gonogo'
+
+    @dict_callback('Threshold', 'fa-arrows-down-to-line')
+    def get_threshold_modal(self):
+        # STM depth is already in dB (more negative indicates greater
+        # modulation depth), so no unit conversion is needed.
+        return self._get_threshold_modal('dB', lambda x: x.round(2))
 
 
 class GapDetectionGoNogo(ABTSDataTypeDescription):
