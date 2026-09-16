@@ -169,6 +169,12 @@ class ABRIOClick(ABRIO):
     experiment = 'abr_io_click'
 
 
+class ABRIOFreeField(ABRIO):
+    """ABR I/O run in the freefield rig; identical outputs to :class:`ABRIO`."""
+
+    experiment = 'abr_io_freefield'
+
+
 class MLRLLRIOBase(ERPIO):
     """Common output layout for every ``mlr_llr_io`` variant (booth and
     freefield, tone and click), produced by ``cftsdata.summarize_mlr_llr``.
@@ -301,6 +307,23 @@ class EFRRAMFreeField(EFR):
     """RAM EFR run in the freefield rig; same outputs as :class:`EFRRAM`."""
 
     experiment = 'efr_ram_epoch_freefield'
+
+
+class EFRSAMLegacy(EFR):
+    """SAM EFR as run before the epoch-based acquisition, which replaced it.
+
+    Same ``summarize_efr`` outputs as :class:`EFRSAM`, so only the experiment
+    type differs. The two never overlap on disk: the non-epoch form runs
+    2022-12-14 to 2023-04-03 and ``efr_sam_epoch`` picks up 2023-06-05.
+    """
+
+    experiment = 'efr_sam'
+
+
+class EFRRAMLegacy(EFR):
+    """RAM EFR before the epoch-based acquisition; see :class:`EFRSAMLegacy`."""
+
+    experiment = 'efr_ram'
 
 
 # A single animal ID token, e.g. ``B028-1`` or ``G011-2``. Used to pull every
