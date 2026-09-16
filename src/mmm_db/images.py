@@ -1019,6 +1019,8 @@ class Cochleogram(DataTypeDescription):
     ``self.path`` and can be surfaced through additional callbacks later.
     """
 
+    is_folder = True
+
     def _frequency_maps(self):
         """Return the ``*_frequency_map.pdf`` files directly in this folder.
 

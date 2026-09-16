@@ -30,6 +30,10 @@ def summarize_stretches(s: pd.Series) -> str:
 
 class PSIDataTypeDescription(DataTypeDescription):
 
+    # Every psiexperiment dataset is a run folder: parse() matches on the
+    # folder name and get_file() resolves outputs as siblings inside it.
+    is_folder = True
+
     experiment = None
 
     def _parse(self, filename):
