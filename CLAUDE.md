@@ -32,15 +32,24 @@ system") for how the framework side consumes this; this file covers the
   `inear_speaker_calibration_chirp`, ...).
 - `abtsdata.py`, `images.py`, `photos.py` — other `target_type` families
   (behavior, histology images, photos).
-- `scripts/check_psi_filenames.py` — scans the run folders under
-  `M:\physiology\animals` and flags names `parse_psi_filename` can't read
-  (typically a doubled space), names that don't *end* at the experiment
-  type (a trailing note, which parses but matches no description class),
-  and names that disagree with the `<animal>/<date>/` folders they sit in.
-  Reports only; renaming a folder changes its `relative_path` and wants a
-  `flask data sync` afterwards. Run it after adding an experiment type —
-  its `unregistered-type` line lists what's on disk but not in
-  `registry.py`.
+- `scripts/check_psi_filenames.py` — scans the physiology run folders and
+  flags names `parse_psi_filename` can't read (typically a doubled space),
+  names that don't *end* at the experiment type (a trailing note, which
+  parses but matches no description class), and names that disagree with
+  the `<animal>/<date>/` folders they sit in. Reports only; renaming a
+  folder changes its `relative_path` and wants a `flask data sync`
+  afterwards. Run it after adding an experiment type — its
+  `unregistered-type` line lists what's on disk but not in `registry.py`.
+
+  The tree to scan comes from the `DataLocation` rows attached to CFTS
+  datatypes, via `DATABASE_URL`, so it needs no arguments on either the
+  dev machine (`M:/physiology/animals`) or the server
+  (`/volume1/data/physiology/animals`). On the server:
+
+  ```sh
+  ssh mmm 'cd /volume2/docker/flask && /usr/local/bin/docker-compose \
+      exec -T web python /app/mmm-db/scripts/check_psi_filenames.py --quiet'
+  ```
 
 ## Adding a new CFTS experiment type
 

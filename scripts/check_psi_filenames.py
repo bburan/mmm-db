@@ -2,12 +2,11 @@
 
 Why
 ---
-Every run folder under ``M:\\physiology\\animals`` is named by the CFTS
-launcher, but the name is editable afterwards and gets hand-typed often
-enough that typos land in the tree. A typo is silent: ``sync`` creates the
-``Data`` row either way, and the folder simply never shows up under its
-datatype in the viewer. These are the ways a name goes wrong, in the order
-this script checks them:
+Every run folder in the physiology tree is named by the CFTS launcher, but
+the name is editable afterwards and gets hand-typed often enough that typos
+land in the tree. A typo is silent: ``sync`` creates the ``Data`` row either
+way, and the folder simply never shows up under its datatype in the viewer.
+These are the ways a name goes wrong, in the order this script checks them:
 
 ``unparseable``
     ``cftsdata.dataset.parse_psi_filename`` raises. Nothing downstream can
@@ -42,13 +41,27 @@ of every row under it and wants a ``flask data sync`` plus an orphan check
 afterwards. Suggested names are printed for the whitespace cases only, where
 the fix is unambiguous.
 
+The tree to scan comes from the ``DataLocation`` rows attached to CFTS
+datatypes, reached via ``DATABASE_URL`` -- see ``resolve_roots``. On the
+server that resolves itself; off it, pass ``--root``.
+
 Usage
 -----
-    python check_psi_filenames.py                   # whole tree
-    python check_psi_filenames.py G025-2 G023-3     # just these animals
-    python check_psi_filenames.py --since 20260101  # recent dates only
-    python check_psi_filenames.py --csv report.csv
-    python check_psi_filenames.py --quiet           # problems only
+On the server, where DATABASE_URL is already set::
+
+    docker-compose exec -T web \\
+        python /app/mmm-db/scripts/check_psi_filenames.py --quiet
+
+Anywhere, against a tree given directly::
+
+    python check_psi_filenames.py --root M:\\physiology\\animals
+
+Either form takes::
+
+    G025-2 G023-3     # limit to these animals
+    --since 20260101  # recent dates only
+    --csv report.csv  # also write every problem to a CSV
+    --quiet           # problems only, no info section
 
 Exits 1 if any error- or warning-level problem was found, so it can run as a
 scheduled check.
@@ -68,8 +81,6 @@ from cftsdata.dataset import parse_psi_filename
 from mmm_db.registry import DESCRIPTION_CLASSES
 
 log = logging.getLogger('check_psi_filenames')
-
-DEFAULT_ROOT = Path(r'M:\physiology\animals')
 
 # Runs live at <root>/<animal>/<date>/<run>; the date folder is 8 digits.
 P_DATE_DIR = re.compile(r'^\d{8}$')
@@ -95,12 +106,56 @@ SEVERITY = {
     'no-ear': INFO,
 }
 
-# Every experiment type a registered description class will match. The
-# classes match with endswith, so this is the set of legal name endings.
-REGISTERED_TYPES = {
-    cls.experiment for cls in DESCRIPTION_CLASSES.values()
+# (registry key, experiment type) for every class that matches by name.
+# Tested with endswith, not equality, because that is what
+# PSIDataTypeDescription.parse does -- and the difference is load-bearing:
+# 'dual_dpoae_io' ends with 'dpoae_io', so DPOAEIO claims it. An equality
+# test would report such a folder as unregistered when it is in fact
+# already (perhaps wrongly) absorbed by a shorter type.
+REGISTERED_TYPES = [
+    (key, cls.experiment) for key, cls in DESCRIPTION_CLASSES.items()
     if getattr(cls, 'experiment', None)
-}
+]
+
+
+def resolve_roots():
+    """Return the data roots to scan, read from the ``DataLocation`` table.
+
+    The path is not in the environment because it is not environment-shaped:
+    it is per-datatype, editable from the settings page, and differs between
+    the container (``/volume1/data/...``) and a dev checkout (``M:\\...``).
+    ``DATABASE_URL`` -- already set for ``web`` and ``worker`` in
+    ``docker-compose.yml`` -- is the env var that points here, so the check
+    follows a location repointed in the UI with no redeploy.
+
+    Only datatypes backed by a ``CFTSDataTypeDescription`` count. That is
+    exactly the set whose folder names ``parse_psi_filename`` reads:
+    ``ABTSDataTypeDescription`` also derives from ``PSIDataTypeDescription``
+    but parses with ``parse_abts_filename``, and running the behaviour tree
+    through the wrong parser would report every folder in it as broken.
+    """
+    from colony_manager import models
+    from colony_manager.db import get_session
+    from mmm_db.cftsdata import CFTSDataTypeDescription
+
+    try:
+        session = get_session()
+    except KeyError:
+        raise SystemExit(
+            'DATABASE_URL is not set, so the data root cannot be looked up.\n'
+            'Set it, or pass --root to scan a tree directly.')
+
+    roots = set()
+    for loc in session.query(models.DataLocation).all():
+        cls = DESCRIPTION_CLASSES.get(loc.datatype.description_class)
+        if cls is not None and issubclass(cls, CFTSDataTypeDescription):
+            roots.add(loc.base_path)
+
+    if not roots:
+        raise SystemExit(
+            'No DataLocation is attached to a CFTS datatype, so there is\n'
+            'nothing to scan. Pass --root to scan a tree directly.')
+    return [Path(r) for r in sorted(roots)]
 
 
 def find_run_folders(root, animals=None, since=None):
@@ -113,7 +168,12 @@ def find_run_folders(root, animals=None, since=None):
     try:
         animal_entries = sorted(os.scandir(root), key=lambda e: e.name)
     except OSError as exc:
-        raise SystemExit(f'cannot read {root}: {exc}')
+        # The usual cause is running off the server: the database records
+        # container-side paths, which do not exist on a dev machine.
+        raise SystemExit(
+            f'cannot read {root}: {exc}\n'
+            'If this is a server-side path, pass --root to scan the '
+            'equivalent tree here.')
 
     for animal in animal_entries:
         if not animal.is_dir() or animal.name.startswith('_'):
@@ -162,7 +222,7 @@ def check_run(animal_dir, date_dir, path):
             f'name continues past "{etype}" with "{trailing.strip()}" -- '
             f'no description class matches',
         ))
-    elif etype not in REGISTERED_TYPES:
+    elif not any(path.stem.endswith(exp) for _, exp in REGISTERED_TYPES):
         problems.append((
             'unregistered-type',
             f'"{etype}" has no class in mmm_db.registry',
@@ -215,8 +275,10 @@ def main():
         description='Flag run folders the CFTS filename parser cannot read.')
     parser.add_argument('animals', nargs='*',
                         help='limit to these animal folders (default: all)')
-    parser.add_argument('--root', type=Path, default=DEFAULT_ROOT,
-                        help=f'tree to scan (default: {DEFAULT_ROOT})')
+    parser.add_argument('--root', type=Path,
+                        help='tree to scan (default: every DataLocation '
+                             'attached to a CFTS datatype, read from the '
+                             'database via DATABASE_URL)')
     parser.add_argument('--since', metavar='YYYYMMDD',
                         help='skip date folders before this one')
     parser.add_argument('--csv', type=Path,
@@ -236,24 +298,33 @@ def main():
     if args.since and not P_DATE_DIR.match(args.since):
         parser.error('--since wants a YYYYMMDD date')
 
+    roots = [args.root] if args.root else resolve_roots()
+
     rows = []
     found = []
     n_runs = 0
-    for animal_dir, date_dir, path in find_run_folders(
-            args.root, set(args.animals), args.since):
-        n_runs += 1
-        problems, info = check_run(animal_dir, date_dir, path)
-        rows.append((animal_dir, date_dir, path, info))
-        for kind, detail in problems:
-            found.append((animal_dir, date_dir, path, kind, detail))
+    for root in roots:
+        for animal_dir, date_dir, path in find_run_folders(
+                root, set(args.animals), args.since):
+            n_runs += 1
+            problems, info = check_run(animal_dir, date_dir, path)
+            rows.append((animal_dir, date_dir, path, info))
+            for kind, detail in problems:
+                found.append((animal_dir, date_dir, path, kind, detail))
 
+    # Deliberately across all roots: the experimenter census is only
+    # meaningful against every folder the check can see.
     found.extend(check_experimenters(rows))
 
     by_severity = {ERROR: [], WARNING: [], INFO: []}
     for item in found:
         by_severity[SEVERITY[item[3]]].append(item)
 
-    log.info('scanned %d run folders under %s', n_runs, args.root)
+    source = 'given' if args.root else 'from DataLocation'
+    log.info('scanned %d run folders under %d root(s) (%s):',
+             n_runs, len(roots), source)
+    for root in roots:
+        log.info('  %s', root)
     if args.animals:
         log.info('limited to: %s', ', '.join(sorted(args.animals)))
 
