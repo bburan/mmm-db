@@ -170,7 +170,7 @@ class ABRIOClick(ABRIO):
 
 
 class MLRLLRIOBase(ERPIO):
-    """Common output layout for all ``mlr_llr_io_*`` variants (booth and
+    """Common output layout for every ``mlr_llr_io`` variant (booth and
     freefield, tone and click), produced by ``cftsdata.summarize_mlr_llr``.
 
     That module saves a single ``waveforms.pdf`` covering all three bands,
@@ -179,6 +179,11 @@ class MLRLLRIOBase(ERPIO):
 
     experiment = None
     waveforms_pdf_suffix = 'waveforms.pdf'
+
+
+class MLRLLRIO(MLRLLRIOBase):
+
+    experiment = 'mlr_llr_io'
 
 
 class MLRLLRIOClick(MLRLLRIOBase):
@@ -284,6 +289,18 @@ class EFRRAM(EFR):
 class EFRSAM(EFR):
 
     experiment = 'efr_sam_epoch'
+
+
+class EFRSAMFreeField(EFR):
+    """SAM EFR run in the freefield rig; same outputs as :class:`EFRSAM`."""
+
+    experiment = 'efr_sam_epoch_freefield'
+
+
+class EFRRAMFreeField(EFR):
+    """RAM EFR run in the freefield rig; same outputs as :class:`EFRRAM`."""
+
+    experiment = 'efr_ram_epoch_freefield'
 
 
 # A single animal ID token, e.g. ``B028-1`` or ``G011-2``. Used to pull every
