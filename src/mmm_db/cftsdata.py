@@ -1,18 +1,12 @@
 import re
 from datetime import datetime
-from pathlib import Path
 
-import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 
 from cftsdata.dataset import parse_psi_filename
 from cftsdata.summarize_abr import load_abr_waveforms
-from cftsdata.summarize_mlr_llr import load_waveforms as load_mlr_llr_waveforms
 
-from colony_manager.datatypes import (
-    plot_callback, pdf_callback, dict_callback,
-)
+from colony_manager.datatypes import pdf_callback, dict_callback
 
 from .psidata import PSIDataTypeDescription
 
@@ -54,86 +48,6 @@ def _format_freq_label(freq_hz):
     return f'{freq_hz / 1000:g} kHz'
 
 
-def _wave_colors():
-    """Return the 5-wave CSS hex colors from abr's color scheme."""
-    from abr.abrpanel import PointPlot
-    return [
-        '#{:02x}{:02x}{:02x}'.format(int(r * 255), int(g * 255), int(b * 255))
-        for r, g, b in PointPlot.COLORS
-    ]
-
-
-def plotly_waterfall(waveforms, waterfall_level='level', scale_method='mean', 
-                     base_scale_multiplier=1, y_scale_bar_size=1, 
-                     label_offset_x=-0.05, is_visible=True):
-    """
-    Generates the pre-computed Plotly traces, annotations, and shapes for a single waterfall.
-    """
-    levels = waveforms.index.get_level_values(waterfall_level)
-    t = waveforms.columns.values
-    w_vals = waveforms.values
-    n = len(w_vals)
-    offset_step = 1 / (n + 1)
-
-    limits = [(w.min(), w.max()) for w in w_vals if not np.isnan(w).all()]
-
-    if scale_method == 'mean':
-        base_scale = np.mean(np.abs(np.array(limits))) * base_scale_multiplier
-    elif scale_method == 'max':
-        base_scale = np.max(np.abs(np.array(limits))) * base_scale_multiplier
-    else:
-        raise ValueError(f'Unsupported scale_method "{scale_method}"')
-
-    traces = []
-    annotations = []
-    shapes = []
-
-    for i, (l, w) in enumerate(zip(levels, w_vals)):
-        if np.isnan(w).all():
-            continue
-
-        offset = offset_step * i + offset_step * 0.5
-        w_norm = w / base_scale
-        w_scaled = ((w_norm + 1) / 2) * offset_step
-        w_final = w_scaled + offset
-
-        # 1. Store the Trace
-        traces.append(go.Scatter(
-            x=t,
-            y=w_final,
-            mode='lines',
-            line=dict(color='black'),
-            name=str(l),
-            hoverinfo='skip',
-            visible=is_visible # Set visibility during creation!
-        ))
-
-        # 2. Store the Annotation dict
-        annotations.append(dict(
-            x=label_offset_x,
-            y=offset + (offset_step / 2),
-            xref="x domain",
-            yref="y",
-            text=str(l),
-            showarrow=False,
-            xanchor="right"
-        ))
-
-    # 3. Store the Scale Bar dict
-    if y_scale_bar_size is not None:
-        scale_height = (y_scale_bar_size / base_scale) * (offset_step / 2)
-        shapes.append(dict(
-            type="line",
-            x0=1, x1=1,
-            y0=1, y1=1 + scale_height,
-            xref="x domain",
-            yref="y domain",
-            line=dict(color="red", width=2)
-        ))
-
-    return traces, annotations, shapes
-
-
 class CFTSDataTypeDescription(PSIDataTypeDescription):
 
     def _parse(self, filename):
@@ -141,18 +55,18 @@ class CFTSDataTypeDescription(PSIDataTypeDescription):
 
 
 class ERPIO(CFTSDataTypeDescription):
-    """Shared waveform viewer for evoked-response I/O experiments.
+    """Shared waveform PDF for evoked-response I/O experiments.
 
-    ``waveforms_csv_suffix``/``waveforms_csv_loader`` and
-    ``waveforms_pdf_suffix`` are overridable per subclass because
-    ``abr.py``'s ``summarize_abr`` and ``summarize_mlr_llr`` use different
-    output filenames and CSV layouts for what is otherwise the same kind of
-    waveform data (see ``MLRLLRIOBase`` below).
+    ``waveforms_pdf_suffix`` is overridable per subclass because
+    ``abr.py``'s ``summarize_abr`` and ``summarize_mlr_llr`` give the
+    waveform PDF different names (see ``MLRLLRIOBase`` below).
     """
 
-    waveforms_csv_suffix = 'ABR average waveforms.csv'
-    waveforms_csv_loader = staticmethod(load_abr_waveforms)
     waveforms_pdf_suffix = 'ABR waveforms.pdf'
+
+    @pdf_callback('Waveforms PDF')
+    def get_waveforms_pdf(self):
+        return self._get_pdf(self.waveforms_pdf_suffix)
 
 
 class ABRIO(ERPIO):
@@ -236,6 +150,18 @@ class ABRIO(ERPIO):
     def get_abr_presto_diagnostics_pdf(self):
         return self._get_pdf('ABRpresto diagnostics.pdf')
 
+    @dict_callback('Thresholds', 'fa-arrows-down-to-line')
+    def get_thresholds(self):
+        picks = _load_all_analyzed(self.path)
+        result = {}
+        for rater, rater_picks in sorted(picks.items()):
+            for freq_hz, info in sorted(rater_picks.items()):
+                th = info['threshold']
+                result[f'{rater} — {_format_freq_label(freq_hz)}'] = (
+                    f'{th:.1f} dB SPL' if th is not None else 'Not set'
+                )
+        return result
+
 
 class ABRIOClick(ABRIO):
     """Click-evoked ABR I/O; identical output layout to :class:`ABRIO`."""
@@ -247,16 +173,11 @@ class MLRLLRIOBase(ERPIO):
     """Common output layout for all ``mlr_llr_io_*`` variants (booth and
     freefield, tone and click), produced by ``cftsdata.summarize_mlr_llr``.
 
-    That module saves separate ``ABR``/``MLR``/``LLR average waveforms.csv``
-    files (no polarity/epoch_n columns, unlike ``summarize_abr``'s single
-    combined CSV) and a single ``waveforms.pdf`` (not ``ABR waveforms.pdf``).
-    The interactive viewer shows the ABR-band CSV, matching what
-    :class:`ERPIO` shows for plain ABR I/O.
+    That module saves a single ``waveforms.pdf`` covering all three bands,
+    rather than ``summarize_abr``'s ``ABR waveforms.pdf``.
     """
 
     experiment = None
-    waveforms_csv_suffix = 'ABR average waveforms.csv'
-    waveforms_csv_loader = staticmethod(load_mlr_llr_waveforms)
     waveforms_pdf_suffix = 'waveforms.pdf'
 
 
