@@ -51,6 +51,14 @@ system") for how the framework side consumes this; this file covers the
       exec -T web python /app/mmm-db/scripts/check_psi_filenames.py --quiet'
   ```
 
+- `scripts/list_analysis_hosts.py` — reports which machine each IHC/OHC
+  cell-count analysis was done on, read from the `meta.history` block in
+  each `*_analysis.json` (`{user, host, modified}` per save). Older
+  sidecars predate that block and report `-` rather than being skipped;
+  at last run 307 of 1691 analyses carried a host. Same
+  `DataLocation`-via-`DATABASE_URL` root resolution as
+  `check_psi_filenames.py`.
+
 ## Adding a new CFTS experiment type
 
 1. Find a real example on disk, e.g.
