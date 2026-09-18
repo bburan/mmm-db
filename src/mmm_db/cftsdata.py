@@ -50,6 +50,10 @@ def _format_freq_label(freq_hz):
 
 class CFTSDataTypeDescription(PSIDataTypeDescription):
 
+    # Every CFTS type documents itself with the same help page; see
+    # mmm_db.helptopics.
+    help_topic = 'mmm-db-cfts'
+
     def _parse(self, filename):
         return parse_psi_filename(filename)
 

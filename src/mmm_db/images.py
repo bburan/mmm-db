@@ -346,6 +346,7 @@ class Synaptogram(DataTypeDescription):
     reports whether that sidecar has been produced yet.
     """
 
+    help_topic = 'mmm-db-histology'
     supports_rating = True
 
     def hash_files(self):
@@ -843,6 +844,7 @@ class IHCOHCCount(CZIDataTypeDescription):
     ``get_rating_status`` reports how complete that analysis is.
     """
 
+    help_topic = 'mmm-db-histology'
     supports_rating = True
 
     # A complete cochlear cell count marks one row of inner hair cells and
@@ -1019,6 +1021,7 @@ class Cochleogram(DataTypeDescription):
     ``self.path`` and can be surfaced through additional callbacks later.
     """
 
+    help_topic = 'mmm-db-histology'
     is_folder = True
 
     def _frequency_maps(self):

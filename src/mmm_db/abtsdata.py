@@ -14,6 +14,8 @@ NO_THRESHOLD_MESSAGE = 'Not enough data to compute threshold'
 
 class ABTSDataTypeDescription(PSIDataTypeDescription):
 
+    help_topic = 'mmm-db-abts'
+
     inline_settings = []
     settings_exclude = [
         'response_start',

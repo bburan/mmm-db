@@ -1,7 +1,19 @@
+"""The registry colony-manager loads: description classes, plus help.
+
+``COLONY_MANAGER_DESCRIPTION_REGISTRY`` points at this module. colony-manager
+reads two names from it:
+
+* ``DESCRIPTION_CLASSES`` — the parsers, keyed by the short opaque string
+  stored in ``DataType.description_class``.
+* ``HELP_TOPICS`` — the help pages this package contributes to the app's
+  help section (see :mod:`mmm_db.helptopics`). Optional; a registry without
+  it simply contributes no topics.
+"""
 from mmm_db import abtsdata
 from mmm_db import cftsdata
 from mmm_db import images
 from mmm_db import photos
+from mmm_db.helptopics import HELP_TOPICS  # noqa: F401  (read by colony-manager)
 
 
 DESCRIPTION_CLASSES = {

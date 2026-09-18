@@ -32,3 +32,9 @@ write_to = "src/mmm_db/version.py"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Help topics contributed to colony-manager (mmm_db.helptopics) are
+# Markdown files, not modules, so they need declaring to ship in a
+# built wheel. The deployment installs editable, where this is moot.
+[tool.setuptools.package-data]
+mmm_db = ["help/*.md"]

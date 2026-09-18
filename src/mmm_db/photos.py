@@ -36,6 +36,8 @@ class AnimalPhoto(DataTypeDescription):
     this with the sync framework.
     """
 
+    help_topic = 'mmm-db-photos'
+
     def parse(self):
         """Parse an animal-photo filename into metadata.
 
@@ -102,6 +104,8 @@ class EarDissectionNotes(DataTypeDescription):
     Configure a DataType row with ``target_type='ear'`` and
     ``description_class='mmm_db.photos.EarDissectionNotesDescription'``.
     """
+
+    help_topic = 'mmm-db-photos'
 
     def parse(self):
         """Parse a multi-animal ear-dissection filename.

@@ -15,9 +15,11 @@ system") for how the framework side consumes this; this file covers the
 
 ## Layout
 
-- `registry.py` — `DESCRIPTION_CLASSES`, the only thing `colony-manager`
-  imports. A class isn't usable until it's listed here under a
-  `'<Family>: <Name>'` key.
+- `registry.py` — `DESCRIPTION_CLASSES` plus a re-export of
+  `HELP_TOPICS`; the only module `colony-manager` imports. A class isn't
+  usable until it's listed here under a `'<Family>: <Name>'` key.
+- `helptopics.py` + `help/*.md` — the help pages this package contributes
+  to colony-manager's help section. See "Help pages" below.
 - `psidata.py` — `PSIDataTypeDescription` base class. `parse()` matches
   folders whose name ends in `self.experiment` and delegates to
   `cftsdata.dataset.parse_psi_filename` for animal/date/side metadata.
@@ -58,6 +60,31 @@ system") for how the framework side consumes this; this file covers the
   at last run 307 of 1691 analyses carried a host. Same
   `DataLocation`-via-`DATABASE_URL` root resolution as
   `check_psi_filenames.py`.
+
+## Help pages
+
+`registry.py` exports `HELP_TOPICS` (defined in `helptopics.py`) alongside
+`DESCRIPTION_CLASSES`. colony-manager merges those topics into its own
+`/help/` index under the *Experiment data* section, labelled *plugin*, and
+each description class's `help_topic` attribute puts a `?` button on every
+file of that type and on its row in Settings → Data Types. The framework
+side is documented under "In-app help" in colony-manager's `CLAUDE.md`.
+
+Bodies are Markdown files in `help/`, read on each request (no restart
+needed). colony-manager renders a **subset**: headings, paragraphs, nested
+lists, fenced code, blockquotes, pipe tables, and inline
+emphasis/code/links. Anything fancier is escaped and shown literally, so
+check a new page in the app rather than assuming a Markdown feature works.
+Cross-links use in-app paths (`/help/<slug>`) and work in both directions.
+
+Adding a topic: drop a `.md` in `help/`, add an entry to `HELP_TOPICS`
+(slug prefixed `mmm-db-` to stay clear of colony-manager's own), and point
+the relevant classes' `help_topic` at it. Put `help_topic` **after** the
+class docstring — before it, the docstring stops being `__doc__`.
+
+When adding an experiment type, say what the new type's callbacks actually
+show in `help/cfts.md`; the table there is what a user reads to know
+whether a missing PDF means "not run yet" or "something is wrong".
 
 ## Adding a new CFTS experiment type
 
