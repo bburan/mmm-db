@@ -3,8 +3,8 @@ from datetime import datetime
 
 import pandas as pd
 
-from cftsdata.dataset import parse_psi_filename
-from cftsdata.summarize_abr import load_abr_waveforms
+from cftsdata import loaders
+from cftsdata.util import parse_psi_filename
 
 from colony_manager.datatypes import pdf_callback, dict_callback
 
@@ -83,7 +83,10 @@ class ABRIO(ERPIO):
 
         try:
             filename = self.path / f'{self.path.name} ABR average waveforms.csv'
-            df = load_abr_waveforms(filename)
+            # The loader would derive this name from the folder itself, but
+            # it does so via Path.stem -- keep building it from .name so a
+            # dataset folder containing a dot still resolves.
+            df = loaders.abr.waveforms(filename)
             all_freqs = set(df.index.get_level_values('frequency').unique())
         except Exception:
             return {'is_rated': False, 'note': 'Could not load waveforms'}
