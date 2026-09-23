@@ -13,6 +13,14 @@ P_ANIMAL_PHOTO = re.compile(
 )
 
 
+# What counts as a photo on disk. This has to be a superset of whatever
+# ``upload_filename`` will let through, or a file uploaded from the UI
+# lands under a name its own ``parse()`` rejects and the sync can never
+# re-ingest it -- which is how eight .png screenshots ended up
+# unparseable. Screenshots are .png, phone photos .jpg, scans .pdf.
+PHOTO_SUFFIXES = ('.jpg', '.jpeg', '.png', '.pdf')
+
+
 P_DISSECTION_NOTES = re.compile(
     r'^(?P<ids>.+?)(?:\s+-\s+(?P<note>.+))?$'
 )
@@ -48,7 +56,7 @@ class AnimalPhoto(DataTypeDescription):
             ``note`` (str or None). Returns ``None`` for files that don't
             match the convention.
         """
-        if self.path.suffix.lower() not in ('.jpg', '.pdf'):
+        if self.path.suffix.lower() not in PHOTO_SUFFIXES:
             return None
         match = P_ANIMAL_PHOTO.match(self.path.stem)
         if match is None:
@@ -135,7 +143,7 @@ class EarDissectionNotes(DataTypeDescription):
             for tokens without a side suffix. Returns ``None`` when no
             token has a usable side.
         """
-        if self.path.suffix.lower() != '.jpg':
+        if self.path.suffix.lower() not in PHOTO_SUFFIXES:
             return None
         match = P_DISSECTION_NOTES.match(self.path.stem)
         if match is None:
