@@ -61,6 +61,18 @@ system") for how the framework side consumes this; this file covers the
   `DataLocation`-via-`DATABASE_URL` root resolution as
   `check_psi_filenames.py`.
 
+- `scripts/fix_animal_photo_names.py` — **one-off.** `AnimalPhoto.
+  upload_filename` used to emit a name its own `parse()` could not read
+  back (animal ID and date transposed, and multi-animal IDs joined with a
+  space where `parse()` splits on `,+&|`). The class is fixed; this script
+  renames the photos uploaded before the fix and repoints their `Data`
+  rows. Dry-run by default, `--apply` to commit, and it refuses to touch
+  anything whose name disagrees with the row it belongs to. Delete it once
+  a run reports no renames left. If you are adding a new
+  `upload_filename`, the lesson it encodes is in
+  `tests/test_upload_filename_roundtrip.py`: the name a class builds must
+  parse back through its own `parse()`, and nothing else checks that.
+
 ## Help pages
 
 `registry.py` exports `HELP_TOPICS` (defined in `helptopics.py`) alongside
