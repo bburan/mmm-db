@@ -79,12 +79,29 @@ class AnimalPhoto(DataTypeDescription):
         return []
 
     @classmethod
-    def upload_filename(cls, targets, original_filename, *, date, notes):
+    def upload_filename(cls, targets, original_filename, *, date, label):
+        """Name an upload so :meth:`parse` can read it back.
+
+        The filename must match ``P_ANIMAL_PHOTO`` — ``<animal_id> -
+        <YYYYMMDD> - <note>`` in that order, with multiple IDs joined by
+        one of the separators :meth:`parse` splits on. Getting either
+        wrong makes the file invisible to a later re-sync, which is the
+        whole reason uploads are renamed at all.
+
+        ``label`` is the user's name for the file and is never blank —
+        colony-manager substitutes ``image 1``, ``image 2``, ... when the
+        user names nothing, so the trailing segment is always present
+        (the regex requires it) and two photos of one animal on one day
+        stay distinct. The user's *note* is stored on the row, not
+        folded in here.
+        """
         ext = Path(original_filename).suffix.lower() or '.jpg'
         date_str = date.strftime('%Y%m%d')
-        target_str = ' '.join(t.custom_id for t in targets)
-        notes_str = f' - {notes}' if notes else ''
-        return f'{target_str}/{date_str} - {target_str}{notes_str}{ext}'
+        # ``+`` (not a space) is one of the separators parse() splits
+        # multi-animal IDs on; a space-joined list reads back as a
+        # single bogus ID.
+        target_str = ' + '.join(t.custom_id for t in targets)
+        return f'{target_str}/{target_str} - {date_str} - {label}{ext}'
 
 
 class EarDissectionNotes(DataTypeDescription):
@@ -155,12 +172,15 @@ class EarDissectionNotes(DataTypeDescription):
         return []
 
     @classmethod
-    def upload_filename(cls, targets, original_filename, *, date, notes):
+    def upload_filename(cls, targets, original_filename, *, date, label):
+        # See AnimalPhoto.upload_filename — ``label`` is the user's
+        # filename (never blank), the note stays on the row. The result
+        # round-trips through ``P_DISSECTION_NOTES`` as the ``note``
+        # group.
         ext = Path(original_filename).suffix.lower() or '.pdf'
         _side = {'Left': 'L', 'Right': 'R'}
         target_str = ' '.join(
             f'{t.animal.custom_id}{_side.get(t.side, "")}'
             for t in targets
         )
-        notes_str = f' - {notes}' if notes else ''
-        return f'{target_str}{notes_str}{ext}'
+        return f'{target_str} - {label}{ext}'

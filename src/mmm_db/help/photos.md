@@ -32,11 +32,15 @@ which is why such a file often shows up on
 ## Uploading
 
 Both types accept uploads from the **Upload** button on an animal or ear
-page. You choose the targets, a date and per-file notes; the file is
-renamed to the convention above and written into the configured location.
-An uploaded photo is indistinguishable from one the sync found, so it gets
-the same thumbnail, status and notes handling afterwards.
+page. You choose the targets, a date, and for each file a **name** and a
+**note**. The name becomes the `<note>` segment of the filename above; the
+note is stored with the file and never appears in its name. Leave the name
+blank and the file is numbered for you — *image 1*, *image 2*, … — picking
+up past anything already in that folder, so an upload never replaces an
+existing photo.
 
-Because the name is generated from the targets and the date, uploading is
-the reliable way to add a photo — it cannot produce a name the parser
-later fails to read.
+The rest of the name is generated from the targets and the date and written
+into the configured location. An uploaded photo is indistinguishable from
+one the sync found, so it gets the same thumbnail, status and notes
+handling afterwards — and uploading is the reliable way to add one, since
+it cannot produce a name the parser later fails to read.
