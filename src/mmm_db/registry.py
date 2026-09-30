@@ -22,6 +22,7 @@ DESCRIPTION_CLASSES = {
     'CFTS: ABR IO': cftsdata.ABRIO,
     'CFTS: ABR IO (Click)': cftsdata.ABRIOClick,
     'CFTS: ABR IO (Freefield)': cftsdata.ABRIOFreeField,
+    'CFTS: ABR IO (Click, freefield)': cftsdata.ABRIOClickFreeField,
     'CFTS: MLR/LLR IO (tone)': cftsdata.MLRLLRIO,
     'CFTS: MLR/LLR IO (click)': cftsdata.MLRLLRIOClick,
     'CFTS: MLR/LLR IO (freefield, tone)': cftsdata.MLRLLRIOFreeField,

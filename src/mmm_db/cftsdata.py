@@ -182,6 +182,12 @@ class ABRIOFreeField(ABRIO):
     experiment = 'abr_io_freefield'
 
 
+class ABRIOClickFreeField(ABRIO):
+    """Click-evoked ABR I/O in the freefield rig; identical outputs to :class:`ABRIO`."""
+
+    experiment = 'abr_io_click_freefield'
+
+
 class MLRLLRIOBase(ERPIO):
     """Common output layout for every ``mlr_llr_io`` variant (booth and
     freefield, tone and click), produced by ``cftsdata.summarize_mlr_llr``.
