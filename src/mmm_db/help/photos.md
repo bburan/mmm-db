@@ -1,6 +1,6 @@
 # Photos and dissection notes
 
-Two simple file types, and the only ones in this deployment that can be
+Simple file types, and the only ones in this deployment that can be
 **uploaded** through the interface rather than only discovered by sync.
 
 ## Animal photos
@@ -14,6 +14,20 @@ Attached to an **animal**. Filename convention:
 for example `A001 - 20260415 - cage change.jpg`. A photo covering several
 animals — a litter portrait, say — lists them separated by `,`, `+`, `&`
 or `|`, and the photo is linked to each. JPEG and PDF are accepted.
+
+## Animal text notes
+
+Attached to an **animal**, and written in the app rather than uploaded:
+**New Text Note** on the animal's Files list opens an editor. Notes are
+Markdown — `# Heading`, `**bold**`, `- list item` — and text pasted from
+Word or Outlook keeps its headings, lists, tables, bold and links,
+converted to Markdown as it is pasted. Images and colours are dropped.
+
+The file is saved as `<animal id> - <YYYYMMDD> - <name>.md` (a blank name
+becomes *note 1*, *note 2*, …), in the same per-animal folder layout as
+photos. The read button on its row shows it formatted, with an **Edit**
+button to change the text later. A `.txt` file dropped into the location
+by hand is picked up too, and can be read but not edited.
 
 ## Ear dissection notes
 

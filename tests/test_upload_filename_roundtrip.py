@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mmm_db.photos import AnimalPhoto, EarDissectionNotes
+from mmm_db.photos import AnimalPhoto, AnimalTextNote, EarDissectionNotes
 
 
 UPLOAD_DATE = date(2026, 4, 15)
@@ -105,6 +105,40 @@ def test_animal_photo_files_land_in_a_per_animal_directory():
         AnimalPhoto, [_animal('A001')], 'snap.jpg', 'image 1',
     )
     assert relative_path.split('/')[0] == 'A001'
+
+
+def test_animal_photo_rejects_text_files():
+    _, parsed = _roundtrip(AnimalPhoto, [_animal('A001')], 'note.md', 'note 1')
+    assert parsed is None
+
+
+# ---------------------------------------------------------------------------
+# AnimalTextNote
+# ---------------------------------------------------------------------------
+
+def test_animal_text_note_roundtrips():
+    """colony-manager's note editor names the file ``note<text_note_suffix>``
+    and auto-numbers a blank name as ``note 1``."""
+    relative_path, parsed = _roundtrip(
+        AnimalTextNote, [_animal('A001')],
+        f'note{AnimalTextNote.text_note_suffix}', 'note 1',
+    )
+    assert relative_path == 'A001/A001 - 20260415 - note 1.md'
+    assert parsed == {
+        'animal_id': ['A001'],
+        'date': UPLOAD_DATE,
+        'note': 'note 1',
+    }
+
+
+def test_animal_text_note_accepts_hand_dropped_txt():
+    _, parsed = _roundtrip(AnimalTextNote, [_animal('A001')], 'x.txt', 'surgery')
+    assert parsed is not None
+
+
+def test_animal_text_note_rejects_photos():
+    _, parsed = _roundtrip(AnimalTextNote, [_animal('A001')], 'snap.jpg', 'x')
+    assert parsed is None
 
 
 # ---------------------------------------------------------------------------

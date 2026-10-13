@@ -1,4 +1,4 @@
-"""Description classes for free-form photos attached to animals."""
+"""Description classes for free-form photos and text notes attached to animals."""
 from pathlib import Path
 import re
 from datetime import datetime
@@ -19,6 +19,10 @@ P_ANIMAL_PHOTO = re.compile(
 # re-ingest it -- which is how eight .png screenshots ended up
 # unparseable. Screenshots are .png, phone photos .jpg, scans .pdf.
 PHOTO_SUFFIXES = ('.jpg', '.jpeg', '.png', '.pdf')
+
+# What counts as a text note on disk: what colony-manager's note editor
+# writes (``text_note_suffix``), plus plain text dropped in by hand.
+NOTE_SUFFIXES = ('.md', '.txt')
 
 
 P_DISSECTION_NOTES = re.compile(
@@ -46,6 +50,9 @@ class AnimalPhoto(DataTypeDescription):
 
     help_topic = 'mmm-db-photos'
 
+    #: Extensions :meth:`parse` accepts — see ``PHOTO_SUFFIXES``.
+    suffixes = PHOTO_SUFFIXES
+
     def parse(self):
         """Parse an animal-photo filename into metadata.
 
@@ -56,7 +63,7 @@ class AnimalPhoto(DataTypeDescription):
             ``note`` (str or None). Returns ``None`` for files that don't
             match the convention.
         """
-        if self.path.suffix.lower() not in PHOTO_SUFFIXES:
+        if self.path.suffix.lower() not in self.suffixes:
             return None
         match = P_ANIMAL_PHOTO.match(self.path.stem)
         if match is None:
@@ -110,6 +117,21 @@ class AnimalPhoto(DataTypeDescription):
         # single bogus ID.
         target_str = ' + '.join(t.custom_id for t in targets)
         return f'{target_str}/{target_str} - {date_str} - {label}{ext}'
+
+
+class AnimalTextNote(AnimalPhoto):
+    """Markdown / plain-text notes about an animal.
+
+    Same filename convention as :class:`AnimalPhoto` --
+    ``<animal_id> - <YYYYMMDD> - <name>.md`` -- under a per-animal folder,
+    but for text. Setting ``text_note_suffix`` is what makes colony-manager
+    offer this type in its "New Text Note" editor, which writes the file
+    with that extension. ``.txt`` files dropped into the location by hand
+    are picked up by sync too.
+    """
+
+    suffixes = NOTE_SUFFIXES
+    text_note_suffix = '.md'
 
 
 class EarDissectionNotes(DataTypeDescription):

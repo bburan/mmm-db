@@ -44,5 +44,6 @@ DESCRIPTION_CLASSES = {
     'Histology: IHC and OHC counts': images.IHCOHCCount,
     'Histology: Cochleogram': images.Cochleogram,
     'Photos: Animal': photos.AnimalPhoto,
+    'Notes: Animal': photos.AnimalTextNote,
     'Photos: Ear Dissection Notes': photos.EarDissectionNotes,
 }
