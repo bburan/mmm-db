@@ -48,6 +48,22 @@ def _format_freq_label(freq_hz):
     return f'{freq_hz / 1000:g} kHz'
 
 
+# Session labels in a folder's free-text note, mapped to the event tag the
+# auto-created event should carry. The names on the right must match
+# existing animal-event tags in colony-manager, which never creates tags.
+# "2 week" is an older spelling of "2w" still present on disk.
+SESSION_TAGS = [
+    (re.compile(r'\bpre[- ]?histology\b', re.IGNORECASE), 'pre-histology'),
+    (re.compile(r'\b(?:1d|1 day) post[- ]?exposure\b', re.IGNORECASE), '1d post-exposure'),
+    (re.compile(r'\b(?:2w|2 weeks?) post[- ]?exposure\b', re.IGNORECASE), '2w post-exposure'),
+]
+
+
+def session_tags(name):
+    """Return the event tags named by session labels in folder ``name``."""
+    return [tag for pattern, tag in SESSION_TAGS if pattern.search(name)]
+
+
 class CFTSDataTypeDescription(PSIDataTypeDescription):
 
     # Every CFTS type documents itself with the same help page; see
@@ -55,7 +71,11 @@ class CFTSDataTypeDescription(PSIDataTypeDescription):
     help_topic = 'mmm-db-cfts'
 
     def _parse(self, filename):
-        return parse_psi_filename(filename)
+        result = parse_psi_filename(filename)
+        tags = session_tags(filename.stem)
+        if tags:
+            result['tags'] = tags
+        return result
 
 
 class ERPIO(CFTSDataTypeDescription):
