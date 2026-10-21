@@ -9,6 +9,7 @@ from cftsdata.util import parse_psi_filename
 from colony_manager.datatypes import pdf_callback, dict_callback
 
 from .psidata import PSIDataTypeDescription
+from cftsdata import loaders
 
 
 # Sentinel frequency used by cftsdata/abr (``abr.ABRStim.CLICK.value``) for
@@ -176,6 +177,10 @@ class ABRIO(ERPIO):
     @pdf_callback('ABRpresto Diagnostics')
     def get_abr_presto_diagnostics_pdf(self):
         return self._get_pdf('ABRpresto diagnostics.pdf')
+
+    @dict_callback('ABRpresto Thresholds')
+    def get_abr_presto_thresholds(self):
+        return loaders.abr.abrpresto_th(self.path).to_dict()
 
     @dict_callback('Thresholds', 'fa-arrows-down-to-line')
     def get_thresholds(self):
