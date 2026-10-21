@@ -34,7 +34,7 @@ can make one.
 
 | Experiment | Preview buttons |
 |---|---|
-| **ABR I/O** (tone, click, free-field) | Waveforms PDF, EEG spectrum PDF, ECG PDF, ABRpresto diagnostics, and a **Thresholds** table |
+| **ABR I/O** (tone, click, free-field) | Waveforms PDF, EEG spectrum PDF, ECG PDF, ABRpresto diagnostics, an **ABRpresto Thresholds** table, and a **Thresholds** table |
 | **MLR/LLR I/O** (tone, click, free-field) | the waveform PDF under its own name |
 | **DPOAE I/O** | I/O PDF, Thresholds PDF |
 | **DPgram** | DPgram PDF, Mic spectrum PDF |
