@@ -1,7 +1,7 @@
 # CFTS physiology
 
 Closed-field and free-field physiology collected with psiexperiment: ABR,
-MLR/LLR, DPOAE, DPgram, EFR, MEMR, in-ear calibration and noise exposure.
+ABR adaptation, MLR/LLR, DPOAE, DPgram, EFR, MEMR, in-ear calibration and noise exposure.
 
 ## One run, one folder
 
@@ -35,10 +35,11 @@ can make one.
 | Experiment | Preview buttons |
 |---|---|
 | **ABR I/O** (tone, click, free-field) | Waveforms PDF, EEG spectrum PDF, ECG PDF, ABRpresto diagnostics, an **ABRpresto Thresholds** table, and a **Thresholds** table |
-| **MLR/LLR I/O** (tone, click, free-field) | the waveform PDF under its own name |
+| **ABR adaptation** | Waveforms PDF (one trace per burst), overlay PDF (bursts colored by position in the train), train PDF, EEG spectrum PDF, a **Trials** table (trains averaged and rejected) and a **Stimulus** table (bursts per train, rate, duration) |
+| **MLR/LLR I/O** (tone, click, free-field) | the waveform PDF under its own name, and a **Stimulus PDF** (monitor-microphone waveform and spectrum) |
 | **DPOAE I/O** | I/O PDF, Thresholds PDF |
 | **DPgram** | DPgram PDF, Mic spectrum PDF |
-| **EFR** (SAM / RAM, free-field, legacy) | EEG spectrum PDF, Stimulus SPL PDF, ECG PDF, an **EFR response** table and a **processing settings** table |
+| **EFR** (SAM / RAM, free-field, legacy) | EEG spectrum PDF, Mic spectrum PDF, ECG PDF, an **EFR response** table, a **Stimulus level** table (measured vs. requested level per microphone) and a **processing settings** table |
 | **MEMR** (interleaved click, simultaneous chirp) | MEMR, MEMR total, probe and elicitor PDFs, plus epoch waveform, HT2 threshold diagnostics and an **HT2 threshold** table |
 | **MEMR** (sweep click) | MEMR, MEMR total, probe, elicitor, MEMR block, diagnostics and threshold PDFs, plus a **threshold stats** table |
 | **In-ear calibration** | Calibration PDF |
@@ -46,7 +47,9 @@ can make one.
 
 A button that errors when clicked means the processing step that produces
 that file has not been run for this dataset. Several of these outputs come
-from optional extra passes — MEMR sweep thresholds in particular — so an
+from optional extra passes — MEMR sweep thresholds and the MLR/LLR and EFR
+stimulus checks (`summarize-mlr-llr-spl`, `summarize-efr-spl`) in
+particular — so an
 error there is expected rather than a fault.
 
 ## Noise exposures cover several animals

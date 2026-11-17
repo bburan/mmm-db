@@ -9,7 +9,6 @@ from cftsdata.util import parse_psi_filename
 from colony_manager.datatypes import pdf_callback, dict_callback
 
 from .psidata import PSIDataTypeDescription
-from cftsdata import loaders
 
 
 # Sentinel frequency used by cftsdata/abr (``abr.ABRStim.CLICK.value``) for
@@ -213,6 +212,61 @@ class ABRIOClickFreeField(ABRIO):
     experiment = 'abr_io_click_freefield'
 
 
+class ABRAdaptation(CFTSDataTypeDescription):
+    """ABR adaptation: trains of tone bursts (or clicks), each cut into one
+    repeat per burst. Outputs from ``cftsdata.summarize_abr_adaptation``."""
+
+    experiment = 'abr_adaptation'
+
+    @pdf_callback('Waveforms PDF')
+    def get_waveforms_pdf(self):
+        return self._get_pdf('ABR adaptation waveforms.pdf')
+
+    @pdf_callback('Overlay PDF')
+    def get_overlay_pdf(self):
+        return self._get_pdf('ABR adaptation overlay.pdf')
+
+    @pdf_callback('Train PDF')
+    def get_train_pdf(self):
+        return self._get_pdf('ABR adaptation train.pdf')
+
+    @pdf_callback('EEG Spectrum PDF')
+    def get_eeg_spectrum_pdf(self):
+        return self._get_pdf('ABR adaptation eeg spectrum.pdf')
+
+    @dict_callback('Trials', 'fa-list-ol')
+    def get_trials(self):
+        suffix = loaders.abr_adaptation.SUFFIXES['trials']
+        df = loaders.abr_adaptation.trials(self.get_file(suffix))
+        return {
+            f'{_format_freq_label(freq)}, {level:g} dB SPL':
+                f'{row.epoch_n:.0f} trains averaged, '
+                f'{row.epoch_reject_ratio:.0%} rejected'
+            for (freq, level), row in df.sort_index().iterrows()
+        }
+
+    @dict_callback('Stimulus', 'fa-sliders')
+    def get_stimulus(self):
+        suffix = loaders.abr_adaptation.SUFFIXES['settings']
+        info = loaders.abr_adaptation.settings(self.get_file(suffix))
+        labels = {
+            'n_bursts': ('Bursts per train', '{:.0f}'),
+            'rate': ('Burst rate (/s)', '{:g}'),
+            'burst_duration': ('Burst duration (ms)', lambda x: f'{x * 1e3:g}'),
+            'burst_rise_time': ('Burst rise time (ms)', lambda x: f'{x * 1e3:g}'),
+            'sequence_pause': ('Pause between trains (s)', '{:g}'),
+            'averages': ('Trains requested', '{:.0f}'),
+            'alternate_polarity': ('Alternate polarity', '{}'),
+        }
+        result = {}
+        for key, (label, fmt) in labels.items():
+            value = info.get(key)
+            if value is None or (isinstance(value, float) and value != value):
+                continue
+            result[label] = fmt(value) if callable(fmt) else fmt.format(value)
+        return result
+
+
 class MLRLLRIOBase(ERPIO):
     """Common output layout for every ``mlr_llr_io`` variant (booth and
     freefield, tone and click), produced by ``cftsdata.summarize_mlr_llr``.
@@ -223,6 +277,12 @@ class MLRLLRIOBase(ERPIO):
 
     experiment = None
     waveforms_pdf_suffix = 'waveforms.pdf'
+
+    @pdf_callback('Stimulus PDF', 'fa-volume-high')
+    def get_stimulus_pdf(self):
+        # Written by ``summarize-mlr-llr-spl`` (``process_file_spl``): the
+        # average monitor-microphone waveform per polarity and its spectrum.
+        return self._get_pdf('mic.pdf')
 
 
 class MLRLLRIO(MLRLLRIOBase):
@@ -282,9 +342,14 @@ class IEC(CFTSDataTypeDescription):
 
 class EFR(CFTSDataTypeDescription):
     """Common outputs shared by the SAM and RAM EFR paradigms, produced by
-    ``cftsdata.summarize_efr`` (EEG spectrum/harmonics, stimulus level) and
-    ``cftsdata.summarize_ecg`` (heart rate, run on every ``efr_*``
-    experiment alongside ``abr_io``)."""
+    ``cftsdata.summarize_efr`` (EEG spectrum/harmonics), its separate
+    ``summarize-efr-spl`` entrypoint (stimulus spectrum and level from each
+    microphone) and ``cftsdata.summarize_ecg`` (heart rate, run on every
+    ``efr_*`` experiment alongside ``abr_io``).
+
+    Older versions of ``summarize_efr`` also wrote ``stimulus SPL.pdf``; that
+    check moved to ``summarize-efr-spl``, so it is no longer offered here.
+    """
 
     experiment = None
 
@@ -292,9 +357,27 @@ class EFR(CFTSDataTypeDescription):
     def get_eeg_spectrum_pdf(self):
         return self._get_pdf('EEG spectrum.pdf')
 
-    @pdf_callback('Stimulus SPL PDF')
-    def get_stimulus_spl_pdf(self):
-        return self._get_pdf('stimulus SPL.pdf')
+    @pdf_callback('Mic Spectrum PDF', 'fa-volume-high')
+    def get_mic_spectrum_pdf(self):
+        return self._get_pdf('mic spectrum.pdf')
+
+    @dict_callback('Stimulus Level', 'fa-volume-high')
+    def get_stimulus_level(self):
+        # Requested level vs. the power sum of the carrier and sidebands
+        # measured by each microphone channel.
+        df = loaders.efr.mic_levels(self.get_file(loaders.efr.SUFFIXES['mic_levels']))
+        multi_channel = df['channel'].nunique() > 1
+        result = {}
+        for row in df.sort_values(['channel', 'fc', 'fm']).itertuples():
+            label = f'{row.fm:.0f} Hz / {row.fc / 1000:g} kHz'
+            if multi_channel:
+                label = f'{row.channel} — {label}'
+            result[label] = (
+                f'{row.actual_level:.1f} dB SPL '
+                f'(requested {row.requested_level:.1f}, '
+                f'{row.difference:+.1f} dB)'
+            )
+        return result
 
     @pdf_callback('ECG PDF')
     def get_ecg_pdf(self):
